@@ -144,7 +144,7 @@ def refine(
         # Save refined structure (best result)
         output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        write_refined_structure(batch, refined_coords, out_dir, output_path)
+        write_refined_structure(batch, refined_coords, data_dir, output_path)
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
     if 'refiner' in locals():
