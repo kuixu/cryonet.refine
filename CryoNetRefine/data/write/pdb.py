@@ -60,8 +60,9 @@ def to_pdb(
             atom_coords = atoms["coords"]
             for i, atom in enumerate(atoms):
                 atom_name = str(atom["name"])
-                # Skip terminal OXT atoms when writing PDB
-                if atom_name == "OXT":
+                # Skip terminal OXT atoms when writing PDB (cause: rama-Z loss will fail if OXT is present)
+                if atom_name == "OXT": 
+                    print(f"OXT atom found: {atom_name}")
                     continue
                 # This should not happen on predictions, but just in case.
                 if not atom["is_present"]:
