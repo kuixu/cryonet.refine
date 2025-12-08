@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
-@click.option("--out_suffix", type=str, help="Output suffix", default="refine")
+@click.option("--out_suffix", type=str, help="Output suffix", default="CryoNet.Refine")
 @click.option("--out_dir", type=click.Path(exists=False), help="Output directory", default="./refine_results")
 @click.option("--cache", type=click.Path(exists=False), help="Cache directory")
 @click.option("--checkpoint", type=click.Path(exists=True), help="Model checkpoint", default=None)
@@ -144,7 +144,7 @@ def refine(
         # Save refined structure (best result)
         output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        write_refined_structure(batch, refined_coords, processed.targets_dir, output_path)
+        write_refined_structure(batch, refined_coords, out_dir, output_path)
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
     if 'refiner' in locals():
