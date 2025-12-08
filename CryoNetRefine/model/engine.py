@@ -63,12 +63,12 @@ class Engine:
             if self.refine_args.use_molecule_aware_cropping:
                 self.molecule_aware_cropper = MoleculeTypeAwareSlidingWindowCropper(
                     crop_size=self.max_tokens,
-                    overlap_size=self.max_tokens // 4,  # 25% overlap
-                    min_crop_size=self.max_tokens // 4
+                    overlap_size=0,  
+                    min_crop_size=None
                 )
                 self.cropper = None
                 self.sequence_cropper = None
-                print(f"🔧 Molecule-aware cropping enabled: max_tokens={self.max_tokens}")
+                print(f"Molecule-aware cropping enabled: max_tokens={self.max_tokens}")
             else:
                 raise ValueError("No cropping method selected")
         else:
@@ -531,7 +531,7 @@ class Engine:
         # Debug: Print crop loss info
         init_cc = self.crop_initial_cc.get(crop_idx, "N/A")
         if cc > init_cc:
-            loss_info = f"⬆ ✅Crop {crop_idx}: init={init_cc:.4f}, cur_cc={cc:.4f}, Loss={total_loss.item():.6f}"
+            loss_info = f"⬆ Crop {crop_idx}: init={init_cc:.4f}, cur_cc={cc:.4f}, Loss={total_loss.item():.6f}"
         else:
             loss_info = f"⬇ Crop {crop_idx}: init={init_cc:.4f}, cur_cc={cc:.4f}, Loss={total_loss.item():.6f}"
         for key, value in loss_dict.items():
@@ -611,7 +611,7 @@ class Engine:
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
                     self.patience_counter = 0
-                    print(f"✅ New best loss: {best_loss:.6f} at iteration {iteration}")
+                    print(f"New best loss: {best_loss:.6f} at iteration {iteration}")
                 else:
                     self.patience_counter += 1
             elif cond_early_stop == "cc":
@@ -621,7 +621,7 @@ class Engine:
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
                     self.patience_counter = 0
-                    print(f"✅ New best CC: {best_cc:.6f} at iteration {iteration}")
+                    print(f"New best CC: {best_cc:.6f} at iteration {iteration}")
                 else:
                     self.patience_counter += 1
             else:
@@ -642,10 +642,10 @@ class Engine:
         
         # Return best results if available, otherwise return last results
         if best_coords is not None:
-            print(f"🎯 Returning best results from iteration {best_iteration} with loss {best_loss:.6f}")
+            print(f"Returning best results from iteration {best_iteration} with loss {best_loss:.6f}")
             return best_coords, self.loss_history
         else:
-            print(f"⚠️  No improvement found, returning last iteration results")
+            print(f"No improvement found, returning last iteration results")
             return step_results["predicted_coords"], self.loss_history
         
     def _save_checkpoint(self, iteration, coords, best_loss=None, best_iteration=None):
@@ -665,6 +665,6 @@ class Engine:
         torch.save(checkpoint, checkpoint_path)
         
         if best_iteration == iteration:
-            print(f"💾 Saved BEST checkpoint: {checkpoint_path} (loss: {best_loss:.6f})")
+            print(f"Saved BEST checkpoint: {checkpoint_path} (loss: {best_loss:.6f})")
         else:
-            print(f"💾 Saved checkpoint: {checkpoint_path}")
+            print(f"Saved checkpoint: {checkpoint_path}")

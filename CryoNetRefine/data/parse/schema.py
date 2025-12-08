@@ -2,49 +2,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import gemmi
-
-import click
-import numpy as np
 from Bio import Align
-from chembl_structure_pipeline.exclude_flag import exclude_flag
-from chembl_structure_pipeline.standardizer import standardize_mol
-from rdkit import Chem, rdBase
-from rdkit.Chem import AllChem, HybridizationType
-from rdkit.Chem.MolStandardize import rdMolStandardize
-from rdkit.Chem.rdchem import BondStereo, Conformer, Mol
-from rdkit.Chem.rdDistGeom import GetMoleculeBoundsMatrix
-from rdkit.Chem.rdMolDescriptors import CalcNumHeavyAtoms
+from rdkit.Chem.rdchem import Mol
 from scipy.optimize import linear_sum_assignment
-
-from CryoNetRefine.data import const
-from CryoNetRefine.data.mol import load_molecules
 from CryoNetRefine.data.parse.mmcif import parse_mmcif
 from CryoNetRefine.data.parse.pdb import parse_pdb
 
 from CryoNetRefine.data.types import (
-    Atom,
-    AtomV2,
-    Bond,
-    BondV2,
-    Chain,
+
     ChainInfo,
-    ChiralAtomConstraint,
-    Connection,
-    Coords,
-    Ensemble,
-    InferenceOptions,
-    Interface,
-    PlanarBondConstraint,
-    PlanarRing5Constraint,
-    PlanarRing6Constraint,
-    RDKitBoundsConstraint,
     Record,
-    Residue,
-    StereoBondConstraint,
-    Structure,
     StructureInfo,
-    StructureV2,
     Target,
     TemplateInfo,
 )
@@ -294,6 +262,9 @@ def parse_refine_schema(
     - Does NOT rebuild a new Structure from `schema["sequences"]`.
     """
 
+    def normalize_chain_name(chain_name):
+        return str(chain_name)[0].upper() if chain_name else chain_name
+
     if not cif_path.exists():
         raise ValueError(f"File not found: {cif_path}")
 
@@ -318,16 +289,35 @@ def parse_refine_schema(
     # Use the parsed template data directly
     data = parsed.data          # StructureV2
     sequences = parsed.sequences  # dict[chain_name -> sequence] if available
+
+    norm_sequences = {}
+    used_chain_names = set()
+
+    for chain in data.chains:
+        orig_chain_name = str(chain["name"])
+        norm_chain_name = normalize_chain_name(orig_chain_name)
+        if norm_chain_name in used_chain_names:
+            for ascii_c in map(chr, range(ord('A'), ord('Z') + 1)):
+                if ascii_c not in used_chain_names:
+                    norm_chain_name = ascii_c
+                    break
+        used_chain_names.add(norm_chain_name)
+        chain["name"] = norm_chain_name
+        if isinstance(sequences, dict):
+            seq = sequences.get(orig_chain_name)
+            if seq:
+                norm_sequences[norm_chain_name] = seq
+
     templates = {cif_path.stem: data}
     extra_mols: dict[str, Mol] = {}
 
     # ---------- Construct template_records (each chain aligned to itself) ----------
     template_id = cif_path.stem
     template_records: list[TemplateInfo] = []
-    if isinstance(sequences, dict):
+    if isinstance(norm_sequences, dict):
         for chain in data.chains:
-            chain_name = str(chain["name"])
-            seq = sequences.get(chain_name)
+            chain_name = str(chain["name"]) 
+            seq = norm_sequences.get(chain_name)
             if not seq:
                 continue
             seq_len = len(seq)
@@ -368,11 +358,10 @@ def parse_refine_schema(
         inference_options=None,
         templates=template_records,  
     )
-
     return Target(
         record=record,
         structure=data,
-        sequences=sequences,
+        sequences=norm_sequences,
         templates=templates,
         extra_mols=extra_mols,
     )
