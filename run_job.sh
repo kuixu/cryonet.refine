@@ -1,0 +1,67 @@
+#!/bin/bash
+
+
+#!/bin/bash
+
+# ./cryofold  -m tests/8638/8638.mrc -s tests/8638/8638.fasta -t tests/8638/8638.cif
+# b=$2
+
+
+# if [ "$HOSTNAME" = "smtl01"  ]; then
+#     d=/share01/hpc/zhangxiaoxing/data/f5/jobs_${b}_templ
+# else
+#     d=/data3/xukui/jobs/f5/jobs_${b}_templ
+
+# fi
+j=$1
+
+d=/data1/jobs/$j
+name=$(cat $d/name.list)
+out_dir=$d/${name}
+map=${out_dir}.mrc
+cif=${out_dir}.cif
+# tem=${out_dir}_aem0.pdb
+out=${out_dir}_CryoNet.Refine.cif
+log=${out_dir}.log
+# python cryofold.py -m $map -s $seq -t $tem 
+stg=$d/status
+
+res=$(jq '.resolution' $stg)
+echo "-m $map -s $cif -r $res"
+date >$log;
+# CUDA_VISIBLE_DEVICES=0 python cryonet.fold.py -m $map -s $seq -r $res -o $out;
+
+
+
+# input_pdb_path=$1
+# target_density=$2
+# resolution=$3
+# out_dir=$4
+
+# if [ ! -d "$out_dir" ]; then 
+#     mkdir -p $out_dir
+# fi  
+
+max_tokens=1000
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+checkpoint="${SCRIPT_DIR}/params/cryonet.refine_model_checkpoint_best26.pt"
+echo "Starting CryoNet.Refine..."
+echo "Input model   : $cif"
+echo "Target density: $map"
+echo "Resolution: $res"
+echo "Output: $out_dir"
+echo "Checkpoint: $checkpoint"
+echo "Max tokens: $max_tokens"
+
+CUDA_VISIBLE_DEVICES=0 python main.py \
+    $cif \
+    --target_density $map \
+    --resolution $res \
+    --out_dir $d \
+    --checkpoint $checkpoint \
+    --max_tokens $max_tokens \
+ 
+echo "CryoNet.Refine refinement completed!"
+
+date >> $log
