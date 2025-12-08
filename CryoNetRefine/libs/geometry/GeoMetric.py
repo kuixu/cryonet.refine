@@ -106,10 +106,11 @@ class GeoMetric:
 
         # Prepare Ramachandran ("ramaz") table
         # Create a fast mapping from index to one-letter code
+        # Include index 20 for unknown/non-standard residues (mapped to 'X')
         self._idx_to_1letter = torch.tensor([
             ord(self._restype_3to1_mapping[index_to_restype_3[i]])
             for i in range(len(index_to_restype_3))
-        ], dtype=torch.int32, device='cpu')
+        ] + [ord('X')], dtype=torch.int32, device='cpu')  # Add index 20 -> 'X'
 
         # Process the Ramachandran Z-score database: convert to unified tensor format
         # Find maximum phi/psi bins across all tables

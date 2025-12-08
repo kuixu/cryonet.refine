@@ -64,7 +64,7 @@ class Engine:
                 self.molecule_aware_cropper = MoleculeTypeAwareSlidingWindowCropper(
                     crop_size=self.max_tokens,
                     overlap_size=0,  
-                    min_crop_size=None
+                    min_crop_size=0
                 )
                 self.cropper = None
                 self.sequence_cropper = None
