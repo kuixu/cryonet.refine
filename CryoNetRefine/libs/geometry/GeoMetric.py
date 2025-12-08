@@ -165,10 +165,6 @@ class GeoMetric:
             self._rama_limits_cache[type_id] = limits
 
     def clear_build_cache(self):
-        # 🚀 Clear PDB interpretation cache
-        self.bond_proxies_cache = None
-        self.angle_proxies_cache = None
-        # 🚀 Clear secondary structure cache
         self.ss_types_res_cache = None
         self.ss_cache_seq = None
         # 🚀 Clear RMSD calculation cache
@@ -322,14 +318,11 @@ class GeoMetric:
         self.phi_psi = phi_psi_deg
         self.phi_psi.requires_grad_(True)
         self._compute_sidechain_torsions_parallel()
-
         try:
             self.seq = _build_seq_torch_vectorized(self.prot.aatype)
         except (IndexError, RuntimeError):
             # Fallback to standard vectorized method if error
             self.seq = _build_seq_vectorized(self.prot.aatype)
-        if self.bond_proxies_cache is None or self.angle_proxies_cache is None:
-            self.bond_proxies_cache, self.angle_proxies_cache = self._pytorch_pdb_interpretation_process(self.prot.atom14_mask.clone().detach())
 
         assert len(self.seq) == self.prot_len
 
@@ -451,7 +444,6 @@ class GeoMetric:
         L = self.prot_len - 2
         phi_psi = self.phi_psi[:L]          # [L, 2] backbone dihedrals
         rama_types = self.get_rama_types()  # [L] per-residue rama type ids
-
         # Build rama_scores by type, keeping gradient. This is the simplest method.
         rama_scores = torch.zeros(L, device=phi_psi.device, dtype=phi_psi.dtype)
         
@@ -822,14 +814,6 @@ class GeoMetric:
         
         mon_lib_srv = mon_lib_server.server()
         ener_lib = mon_lib_server.ener_lib()
-
-        test_residues = ['ALA', 'MET', 'THR', 'ASP', 'SER']
-        for res in test_residues:
-            comp_comp_id = mon_lib_srv.get_comp_comp_id_direct(res)
-            # if comp_comp_id is not None:
-                # print(f"Found {res}: {len(comp_comp_id.bond_list)} bonds, {len(comp_comp_id.angle_list)} angles")
-            # else:
-            #     print(f"Missing {res}")
         
         if "SS" not in mon_lib_srv.link_link_id_dict:
             dummy_ss_link = cif_types.chem_link()
@@ -880,210 +864,6 @@ class GeoMetric:
             return atom14_names.index(atom_name)
         except ValueError:
             return None
-    
-    def _pytorch_pdb_interpretation_process(self, atom_mask):
-        
-        mon_lib_srv, ener_lib = self._setup_monomer_library_server()
-        
-        bond_proxies = []
-        angle_proxies = []
-        
-        standard_protein_residues = set('ACDEFGHIKLMNPQRSTVWY')
-        
-        for i in range(self.prot_len):
-            residue_name = self.seq[i]
-            
-            if residue_name not in standard_protein_residues:
-                continue
-            
-            residue_3letter = residue_constants.restype_1to3.get(residue_name)
-            if residue_3letter is None:
-                continue
-            
-            comp_comp_id = mon_lib_srv.get_comp_comp_id_direct(residue_3letter)
-            if comp_comp_id is None:
-                continue
-            
-            expected_atoms = {}  # atom_id -> atom14_index
-            atom_dict = comp_comp_id.atom_dict()
-            
-            for atom_id, atom_info in atom_dict.items():
-                if atom_info.type_symbol == "H":
-                    continue
-                    
-                atom14_idx = self._get_atom_index(atom_id, residue_3letter)
-                if atom14_idx is not None and atom_mask[i, atom14_idx]:
-                    expected_atoms[atom_id] = atom14_idx
-            
-            for bond in comp_comp_id.bond_list:
-                if (bond.value_dist is None or bond.value_dist_esd in [None, 0]):
-                    continue
-                
-                if (bond.atom_id_1 not in expected_atoms or 
-                    bond.atom_id_2 not in expected_atoms):
-                    continue
-                
-                atom1_idx = expected_atoms[bond.atom_id_1]
-                atom2_idx = expected_atoms[bond.atom_id_2]
-                
-                i_seq_1 = i * 14 + atom1_idx
-                i_seq_2 = i * 14 + atom2_idx
-
-                bond_proxy = {
-                    'i_seq': i_seq_1,
-                    'j_seq': i_seq_2,
-                    'distance_ideal': bond.value_dist,
-                    'weight': 1.0 / (bond.value_dist_esd ** 2)
-                }
-                bond_proxies.append(bond_proxy)
-                
-            for angle in comp_comp_id.angle_list:
-                if (angle.value_angle is None or angle.value_angle_esd in [None, 0]):
-                    continue
-
-                if (angle.atom_id_1 not in expected_atoms or
-                    angle.atom_id_2 not in expected_atoms or
-                    angle.atom_id_3 not in expected_atoms):
-                    continue
-
-                atom1_idx = expected_atoms[angle.atom_id_1]
-                atom2_idx = expected_atoms[angle.atom_id_2]
-                atom3_idx = expected_atoms[angle.atom_id_3]
-
-                i_seq_1 = i * 14 + atom1_idx
-                i_seq_2 = i * 14 + atom2_idx
-                i_seq_3 = i * 14 + atom3_idx
-
-                angle_proxy = {
-                    'i_seqs': [i_seq_1, i_seq_2, i_seq_3],
-                    'angle_ideal': angle.value_angle,
-                    'weight': 1.0 / (angle.value_angle_esd ** 2)
-                }
-                angle_proxies.append(angle_proxy)            
-        for i in range(self.prot_len - 1):
-            residue_name_i = self.seq[i]
-            residue_name_j = self.seq[i+1]
-            
-            if residue_name_i not in standard_protein_residues or residue_name_j not in standard_protein_residues:
-                continue
-            
-            if atom_mask[i, 2] and atom_mask[i+1, 0]:  # C, N
-                if residue_name_j == 'P': 
-                    ideal_dist = 1.341  
-                    esd = 0.013
-                else:
-                    ideal_dist = 1.335  
-                    esd = 0.013
-                
-                i_seq_1 = i * 14 + 2  
-                i_seq_2 = (i+1) * 14 + 0  
-                
-                bond_proxy = {
-                    'i_seq': i_seq_1,
-                    'j_seq': i_seq_2,
-                    'distance_ideal': ideal_dist,
-                    'weight': 1.0 / (esd ** 2)
-                }
-                bond_proxies.append(bond_proxy)
-
-        all_intra_angles = []
-        all_inter_angles = []
-
-        for proxy in angle_proxies:
-            i_seqs = proxy['i_seqs']
-            residues = [i_seq // 14 for i_seq in i_seqs]
-            if len(set(residues)) > 1:
-                all_inter_angles.append(proxy)
-            else:
-                all_intra_angles.append(proxy)
-
-        for i in range(self.prot_len - 1):
-            if atom_mask[i, 2] and atom_mask[i+1, 0]: 
-                residue_name_i = self.seq[i]
-                residue_name_j = self.seq[i+1]
-
-                residue_3letter_i = residue_constants.restype_1to3.get(residue_name_i)
-                residue_3letter_j = residue_constants.restype_1to3.get(residue_name_j)
-
-                if residue_3letter_i is None or residue_3letter_j is None:
-                    continue
-
-                comp_comp_id_i = mon_lib_srv.get_comp_comp_id_direct(residue_3letter_i)
-                comp_comp_id_j = mon_lib_srv.get_comp_comp_id_direct(residue_3letter_j)
-
-                if comp_comp_id_i is None or comp_comp_id_j is None:
-                    continue
-                expected_atoms_i = {}
-                expected_atoms_j = {}
-
-                for atom_id, atom_info in comp_comp_id_i.atom_dict().items():
-                    if atom_info.type_symbol == "H":
-                        continue
-                    atom14_idx = self._get_atom_index(atom_id, residue_3letter_i)
-                    if atom14_idx is not None and atom_mask[i, atom14_idx]:
-                        expected_atoms_i[atom_id] = atom14_idx
-
-                for atom_id, atom_info in comp_comp_id_j.atom_dict().items():
-                    if atom_info.type_symbol == "H":
-                        continue
-                    atom14_idx = self._get_atom_index(atom_id, residue_3letter_j)
-                    if atom14_idx is not None and atom_mask[i+1, atom14_idx]:
-                        expected_atoms_j[atom_id] = atom14_idx
-
-                peptide_angles = [
-                    {'atoms': [('O', 1), ('C', 1), ('N', 2)], 'ideal': 123.0, 'esd': 2.0},   # O(i)-C(i)-N(i+1)
-                    {'atoms': [('CA', 1), ('C', 1), ('N', 2)], 'ideal': 116.2, 'esd': 2.0},  # CA(i)-C(i)-N(i+1)
-                    {'atoms': [('C', 1), ('N', 2), ('CA', 2)], 'ideal': 121.7, 'esd': 2.0},  # C(i)-N(i+1)-CA(i+1)
-                ]
-
-                for angle_info in peptide_angles:
-                    atoms = angle_info['atoms']
-                    atom1_id, comp1 = atoms[0]
-                    atom2_id, comp2 = atoms[1]
-                    atom3_id, comp3 = atoms[2]
-
-                    expected1 = expected_atoms_i if comp1 == 1 else expected_atoms_j
-                    expected2 = expected_atoms_i if comp2 == 1 else expected_atoms_j
-                    expected3 = expected_atoms_i if comp3 == 1 else expected_atoms_j
-
-                    if (atom1_id not in expected1 or
-                        atom2_id not in expected2 or
-                        atom3_id not in expected3):
-                        continue
-
-                    atom1_idx = expected1[atom1_id]
-                    atom2_idx = expected2[atom2_id]
-                    atom3_idx = expected3[atom3_id]
-
-                    if comp1 == 1:
-                        i_seq_1 = i * 14 + atom1_idx
-                    else:
-                        i_seq_1 = (i+1) * 14 + atom1_idx
-
-                    if comp2 == 1:
-                        i_seq_2 = i * 14 + atom2_idx
-                    else:
-                        i_seq_2 = (i+1) * 14 + atom2_idx
-
-                    if comp3 == 1:
-                        i_seq_3 = i * 14 + atom3_idx
-                    else:
-                        i_seq_3 = (i+1) * 14 + atom3_idx
-
-                    angle_proxy = {
-                        'i_seqs': [i_seq_1, i_seq_2, i_seq_3],
-                        'angle_ideal': angle_info['ideal'],
-                        'weight': 1.0 / (angle_info['esd'] ** 2)
-                    }
-                    all_inter_angles.append(angle_proxy)
-
-        angle_proxies = []
-        angle_proxies.extend(all_intra_angles)
-        angle_proxies.extend(all_inter_angles)
-
-        return bond_proxies, angle_proxies
-
-
     def compute_bond_angle_rmsd_from_pdb(self, pdb_path: str, pred_coords_unpad_tensor: torch.Tensor, cache_key: str = None) -> Dict[str, torch.Tensor]:
         """
         Read coordinates from a PDB file and use mmtbx proxies to compute differentiable geometric RMSD.
@@ -1161,7 +941,6 @@ class GeoMetric:
                         atom.name.strip()
                     )
                     pred_idx_map[key] = i
-                
                 # Map from sorted hierarchy to pred_coords
                 perm_indices = []
                 for atom in pdb_hierarchy.atoms():
@@ -1179,6 +958,13 @@ class GeoMetric:
                     else:
                         raise ValueError(f"Atom not found in original PDB: {key}")
                 
+                # for i in range(8000):
+                #     atom = list(pdb_hierarchy.atoms())[i]
+                #     atom_xyz = atom.xyz  # (x, y, z) tuple
+                #     sites_xyz = (sites_cart[i][0], sites_cart[i][1], sites_cart[i][2])
+                #     print(f"Atom {i}: hierarchy={atom_xyz}, sites_cart={sites_xyz}")
+                #     print(f"  Match: {abs(atom_xyz[0] - sites_xyz[0]) < 0.001}")
+
                 # Convert to tensor (keep on CPU to save GPU memory, move to GPU when using)
                 perm_tensor_cpu = torch.tensor(perm_indices, dtype=torch.long, device='cpu')
                 
@@ -1205,22 +991,23 @@ class GeoMetric:
             sites_cart = self._rmsd_sites_cart_cache
             perm_tensor_cpu = self._rmsd_perm_tensor_cache
             # print(f"🚀 Using cached GRM and atom mapping (key: {cache_key})")
-        
         # Move perm_tensor to target device
         perm_tensor = perm_tensor_cpu.to(pred_coords_unpad_tensor.device)
         pred_coords_aligned = pred_coords_unpad_tensor[perm_tensor]
         
         # Upgrade precision to float64 to reduce numerical errors
         pred_coords_aligned_f64 = pred_coords_aligned.to(dtype=torch.float64)
-        
         # Get energies_sites object (use mmtbx sites_cart to create proxies)
         energies_sites = grm.energies_sites(
             sites_cart=sites_cart,
             compute_gradients=True
         )
-        
+        # bond_deviations = energies_sites.bond_deviations()
+        # angle_deviations = energies_sites.angle_deviations()
+        # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
+        # angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
+        # print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
         # Perform RMSD calculation using differentiable, reordered coords tensor
-        sites_cart_tensor = pred_coords_aligned_f64
         
         # Compute differentiable bond RMSD
         bond_deltas_sq = []
@@ -1235,8 +1022,8 @@ class GeoMetric:
             i_seq, j_seq = proxy.i_seqs
             
             # Compute actual bond length (differentiable, use more stable vector_norm)
-            site1 = sites_cart_tensor[i_seq]
-            site2 = sites_cart_tensor[j_seq]
+            site1 = pred_coords_aligned_f64[i_seq]
+            site2 = pred_coords_aligned_f64[j_seq]
             distance_model = torch.linalg.vector_norm(site2 - site1, ord=2)
             
             # Delta = ideal - model (consistent with mmtbx)
@@ -1250,12 +1037,11 @@ class GeoMetric:
                 
             i_seq = proxy.i_seq
             j_seq = proxy.j_seq
-            site1 = sites_cart_tensor[i_seq]
-            site2 = sites_cart_tensor[j_seq]
+            site1 = pred_coords_aligned_f64[i_seq]
+            site2 = pred_coords_aligned_f64[j_seq]
             distance_model = torch.linalg.vector_norm(site2 - site1, ord=2)
             delta = proxy.distance_ideal - distance_model
             bond_deltas_sq.append(delta * delta)
-        
         # Compute bond RMSD
         if bond_deltas_sq:
             bond_deltas_sq_tensor = torch.stack(bond_deltas_sq)
@@ -1276,9 +1062,9 @@ class GeoMetric:
             i_seq, j_seq, k_seq = proxy.i_seqs
             
             # Compute actual angle (differentiable, use more stable atan2 method)
-            site1 = sites_cart_tensor[i_seq]
-            site2 = sites_cart_tensor[j_seq]  # central atom
-            site3 = sites_cart_tensor[k_seq]
+            site1 = pred_coords_aligned_f64[i_seq]
+            site2 = pred_coords_aligned_f64[j_seq]  # central atom
+            site3 = pred_coords_aligned_f64[k_seq]
             
             vec1 = site1 - site2
             vec2 = site3 - site2
@@ -1308,7 +1094,7 @@ class GeoMetric:
             angle_rmsd = torch.sqrt(torch.mean(angle_deltas_sq_tensor))
         else:
             angle_rmsd = torch.tensor(0.0, requires_grad=True)
-        
+        # print(f'self debug bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
         return {
             "bond_rmsd": bond_rmsd,
             "angle_rmsd": angle_rmsd,

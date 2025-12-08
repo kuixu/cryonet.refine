@@ -47,7 +47,7 @@ class RefineArgs:
         "geometric": 1.0,
         "rama": 500.0,
         "rotamer": 500.0,
-        "bond": 100,
+        "bond": 50,
         "angle": 2,
         "cbeta": 1.0,
         "ramaz": 1.00,

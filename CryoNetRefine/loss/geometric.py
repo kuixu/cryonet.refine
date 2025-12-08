@@ -54,10 +54,8 @@ class GeometricAdapter:
                     geometric_idx = residue_constants.restype_order[one_letter]
                     self.boltz_to_geometric_map[boltz_3letter] = geometric_idx
                 else:
-                    print(f"Boltz 3letter {boltz_3letter} not in restype_order")
                     self.boltz_to_geometric_map[boltz_3letter] = 20  # UNK
             else:
-                print(f"Boltz 3letter {boltz_3letter} not in prot_token_to_letter")
                 self.boltz_to_geometric_map[boltz_3letter] = 20  # UNK
         
         self.atom14_names_cache = {}
@@ -121,113 +119,126 @@ class GeometricAdapter:
         """
         Convert Boltz all-atom format to GeoMetric format.
         
-        IMPORTANT: This function only processes PROTEIN residues. 
-        Nucleic acids (DNA/RNA) are filtered out since geometric metrics 
-        (Ramachandran, rotamer, etc.) are protein-specific.
+        For PROTEIN crops:
+        - All tokens are protein, directly convert to atom14
+        - Atoms are stored in const.ref_atoms order, map by position to atom14
+        
+        Returns:
+            coords_geo: [B, R, 14, 3] coordinates in atom14 format
+            seq_idx: [B, R] amino acid indices (0-19 for GeoMetric)
+            res_mask: [B, R] valid residue mask
+            atom_mask_geo: [B, R, 14] atom presence mask
         """
         B, N_atom, _ = coords.shape
         device = coords.device
-        
-        # Check if this is a molecule-aware crop with non-protein type
-        molecule_type = feats.get('molecule_type', 'PROTEIN')
-        if molecule_type in ['DNA', 'RNA', 'NONPOLYMER']:
-            # Return empty tensors for non-protein molecules
-            # Geometric losses are only meaningful for proteins
-            A_max = 14
-            _, R, _ = feats["res_type"].shape
-            coords_geo = torch.zeros((B, R, A_max, 3), device=device, dtype=coords.dtype)
-            atom_mask_geo = torch.zeros((B, R, A_max), device=device, dtype=torch.bool)
-            seq_idx = torch.zeros((B, R), device=device, dtype=torch.long)
-            res_mask = torch.zeros((B, R), device=device, dtype=torch.bool)
-            return coords_geo, seq_idx, res_mask, atom_mask_geo
-        
-        _, R, _ = feats["res_type"].shape
         A_max = 14
-        coords_geo = torch.zeros((B, R, A_max, 3), device=device, dtype=coords.dtype)
-        atom_mask_geo = torch.zeros((B, R, A_max), device=device, dtype=torch.bool)
-        seq_idx = torch.zeros((B, R), device=device, dtype=torch.long)
-
-        record = feats["record"][0]
-        structure: StructureV2 = self._get_cached_structure(record.id, self.data_dir)
-
-        atom_pad_mask = feats["atom_pad_mask"].to(device=device, dtype=torch.bool)
-        coords = coords.to(device=device)
-        res_mask = self._infer_res_mask(feats).to(device=device)
-
-        crop_key = f"{record.id}_{feats.get('crop_start', 0)}_{feats.get('crop_size', len(structure.residues))}"
-        if crop_key in self._crop_cache:
-            cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, protein_res_mask = self._crop_cache[crop_key]
-        else:
-            crop_start = feats['crop_start']
-            crop_size = feats['crop_size']
-            cropped_residues = structure.residues[crop_start:crop_start+crop_size]
-
-            first_residue = cropped_residues[0]
-            last_residue = cropped_residues[-1]
-            global_start = int(first_residue['atom_idx'])
-            atom_end_global = int(last_residue['atom_idx']) + int(last_residue['atom_num'])
-            cropped_atoms = structure.atoms[global_start:atom_end_global]
-
-            residue_names = [res['name'] for res in cropped_residues]
-            # breakpoint()
-            # Map residue names to indices, filtering out non-protein residues
-            # Standard amino acids map to 0-19, non-proteins get 20 (will be masked out)
-            seq_indices = []
-            protein_res_mask = []  # True if this residue is a standard amino acid
-            for name in residue_names:
-                idx = self.boltz_to_geometric_map.get(name, 20)
-                seq_indices.append(idx)
-                protein_res_mask.append(idx < 20)  # Only standard amino acids (0-19) are valid
-
-            self._crop_cache[crop_key] = (cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, protein_res_mask)
-
-        # Check if there are any protein residues
-        if not any(protein_res_mask):
-            # No protein residues in this crop, return empty
-            return coords_geo, seq_idx, res_mask, atom_mask_geo
-
-        seq_idx_tensor = torch.tensor(seq_indices, device=device, dtype=torch.long)
-        seq_idx[:, :len(seq_indices)] = seq_idx_tensor.unsqueeze(0).expand(B, -1)
-
-        res_idx_list, atom14_idx_list, coord_idx_list = [], [], []
-        for res_idx, residue in enumerate(cropped_residues):
-            # Skip non-protein residues
-            if not protein_res_mask[res_idx]:
-                continue
-                
-            res_name = residue['name']
-            mapping = self.residue_atom14_map.get(res_name, {})  # {atom_name: atom14_idx}
-
-            atom_start_global = int(residue['atom_idx'])
-            atom_end_global = atom_start_global + int(residue['atom_num'])
-
-            atom_start_local = atom_start_global - global_start
-            atom_end_local = atom_end_global - global_start
-
-            for atom_offset, atom in enumerate(cropped_atoms[atom_start_local:atom_end_local]):
-                global_atom_idx = atom_start_global + atom_offset
-                coord_idx = global_atom_idx - global_start
-
-                if 0 <= coord_idx < N_atom and atom_pad_mask[0, coord_idx]:
-                    atom_name = atom['name']
-                    if atom_name in mapping:
-                        res_idx_list.append(res_idx)
-                        atom14_idx_list.append(mapping[atom_name])
-                        coord_idx_list.append(coord_idx)
-
-        if res_idx_list:
-            res_idx_tensor = torch.tensor(res_idx_list, device=device, dtype=torch.long)
-            atom14_idx_tensor = torch.tensor(atom14_idx_list, device=device, dtype=torch.long)
-            coord_idx_tensor = torch.tensor(coord_idx_list, device=device, dtype=torch.long)
-
-            coords_geo[0, res_idx_tensor, atom14_idx_tensor] = coords[0, coord_idx_tensor]
-            atom_mask_geo[0, res_idx_tensor, atom14_idx_tensor] = True
         
-        # Update res_mask to exclude non-protein residues
-        protein_mask_tensor = torch.tensor(protein_res_mask, device=device, dtype=torch.bool)
-        res_mask = res_mask.clone().bool()  # Convert to bool for bitwise operations
-        res_mask[0, :len(protein_res_mask)] = res_mask[0, :len(protein_res_mask)] & protein_mask_tensor
+        # Get num_tokens from crop_metadata
+        crop_metadata = feats.get('crop_metadata', {})
+        num_tokens = crop_metadata.get('num_tokens', 0)
+        
+        if num_tokens == 0:
+            token_pad_mask = feats["token_pad_mask"].squeeze(0).bool()
+            num_tokens = token_pad_mask.sum().item()
+        
+        if num_tokens == 0:
+            return (
+                torch.zeros((B, 1, A_max, 3), device=device, dtype=coords.dtype),
+                torch.zeros((B, 1), device=device, dtype=torch.long),
+                torch.zeros((B, 1), device=device, dtype=torch.bool),
+                torch.zeros((B, 1, A_max), device=device, dtype=torch.bool),
+            )
 
+        # Get basic tensors
+        atom_pad_mask = feats["atom_pad_mask"].squeeze(0).bool()    # [N_atoms]
+        res_type = feats["res_type"].squeeze(0)                     # [N_tokens, 33]
+        
+        # Get token indices from res_type (const.tokens ordering)
+        # const.tokens: ["<pad>", "-", "ALA", "ARG", ..., "VAL", "UNK", ...]
+        # Protein AAs are at indices 2-21
+        token_indices = res_type[:num_tokens, :].argmax(dim=-1)  # [num_tokens]
+        
+        # Convert to GeoMetric indices (0-19 for standard AAs)
+        # const.tokens[2:22] = canonical_tokens[0:20] = ["ALA", ..., "VAL"]
+        geo_indices = (token_indices - 2).clamp(min=0, max=20)
+        
+        # Create output tensors
+        coords_geo = torch.zeros((B, num_tokens, A_max, 3), device=device, dtype=coords.dtype)
+        atom_mask_geo = torch.zeros((B, num_tokens, A_max), device=device, dtype=torch.bool)
+        seq_idx = geo_indices.unsqueeze(0)  # [1, num_tokens]
+        res_mask = torch.ones((B, num_tokens), device=device, dtype=torch.bool)
+        
+        # Get atom_to_token mapping
+        if 'atom_to_token' not in feats:
+            return coords_geo, seq_idx, res_mask, atom_mask_geo
+        
+        atom_to_token = feats['atom_to_token'].squeeze(0)  # [N_atoms, N_tokens]
+        
+        # Build ref_atoms to atom14 mapping for each residue type
+        # This maps position in const.ref_atoms to position in atom14
+        ref_to_atom14_maps = {}
+        for res_name in const.ref_atoms:
+            ref_atom_list = const.ref_atoms[res_name]
+            atom14_names = residue_constants.restype_name_to_atom14_names.get(res_name, [])
+            if not atom14_names:
+                continue
+            # Create mapping: ref_atom position -> atom14 position
+            pos_map = {}
+            for ref_pos, atom_name in enumerate(ref_atom_list):
+                if atom_name in atom14_names:
+                    atom14_pos = atom14_names.index(atom_name)
+                    pos_map[ref_pos] = atom14_pos
+            ref_to_atom14_maps[res_name] = pos_map
+        
+        # Map atoms to atom14 positions by their position within the token
+        res_idx_list, atom14_idx_list, coord_idx_list = [], [], []
+        
+        for token_idx in range(num_tokens):
+            tok_idx = token_indices[token_idx].item()
+            
+            # Get 3-letter residue name from const.tokens
+            res_name_3 = const.tokens[tok_idx] if tok_idx < len(const.tokens) else 'UNK'
+            
+            # Get position mapping for this residue type
+            pos_map = ref_to_atom14_maps.get(res_name_3, {})
+            if not pos_map:
+                continue
+            
+            # Find atoms belonging to this token (sorted by global index = ref_atoms order)
+            token_atoms = atom_to_token[:, token_idx].bool()
+            atom_positions = token_atoms.nonzero().squeeze(-1)
+            
+            if atom_positions.numel() == 0:
+                continue
+            if atom_positions.dim() == 0:
+                atom_positions = atom_positions.unsqueeze(0)
+            
+            # Sort atom positions (should already be in order, but ensure it)
+            atom_positions = atom_positions.sort()[0]
+            
+            # Map each atom by its position within the token to atom14
+            for ref_pos, atom_idx in enumerate(atom_positions):
+                atom_idx_val = atom_idx.item()
+                
+                # Check if this atom is valid
+                if atom_idx_val >= N_atom or not atom_pad_mask[atom_idx_val]:
+                    continue
+                
+                # Map ref_pos to atom14 position
+                if ref_pos in pos_map:
+                    atom14_idx = pos_map[ref_pos]
+                    res_idx_list.append(token_idx)
+                    atom14_idx_list.append(atom14_idx)
+                    coord_idx_list.append(atom_idx_val)
+        
+        # Fill output tensors
+        if res_idx_list:
+            res_idx_t = torch.tensor(res_idx_list, device=device, dtype=torch.long)
+            atom14_idx_t = torch.tensor(atom14_idx_list, device=device, dtype=torch.long)
+            coord_idx_t = torch.tensor(coord_idx_list, device=device, dtype=torch.long)
+            
+            coords_geo[0, res_idx_t, atom14_idx_t] = coords[0, coord_idx_t]
+            atom_mask_geo[0, res_idx_t, atom14_idx_t] = True
         return coords_geo, seq_idx, res_mask, atom_mask_geo
 
 class GeometricMetricWrapper:

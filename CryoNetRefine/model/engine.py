@@ -588,7 +588,7 @@ class Engine:
             loss_dict_ep = {}
             for k in loss_dict_list[0].keys():
                 loss_dict_ep[k] = sum([ld[k] for ld in loss_dict_list]) / len(loss_dict_list)
-            line = f"🎈Iteration{iteration:3d}: total loss :{current_loss:.3f} "
+            line = f"Recycle{iteration:3d}: total loss :{current_loss:.3f} "
             for k, v in loss_dict_ep.items():
                 line += f" {k}: {v:.3f} "
             print(line)
@@ -596,7 +596,7 @@ class Engine:
             time_loss_dict_list = step_results["time_loss_dict_list"]
             for k in time_loss_dict_list[0].keys():
                 time_loss_dict_ep[k] = sum([ld[k] for ld in time_loss_dict_list]) / len(time_loss_dict_list)
-            time_line = f"⏰Time: "
+            time_line = f"Time: "
             for k, v in time_loss_dict_ep.items():
                 time_line += f" {k}: {v:.3f} "
             print(time_line)

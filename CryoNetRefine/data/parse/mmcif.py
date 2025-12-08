@@ -651,21 +651,21 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
                 ref_atoms.insert(0, op3_atom)  # Insert at the beginning
 
         # Check if this is the last residue (C-terminal) and add OXT atom
-        is_last_residue = (j == len(result.match_string) - 1) and (polymer_type == gemmi.PolymerType.PeptideL)
-        if is_last_residue:
-            # Add OXT atom to the reference atoms for the last residue
-            # Find the C atom to calculate OXT position
-            c_atom = ref_name_to_atom.get("C")
-            if c_atom is not None:
-                # Create a virtual OXT atom
-                oxt_atom = type('Atom', (), {
-                    'GetProp': lambda self, prop: 'OXT' if prop == 'name' else None,
-                    'GetIdx': lambda self: c_atom.GetIdx(),  # Use C atom's index as reference
-                    'GetAtomicNum': lambda self: 8,  # Oxygen
-                    'GetFormalCharge': lambda self: 0,
-                    'GetChiralTag': lambda self: 0
-                })()
-                ref_atoms.append(oxt_atom)
+        # is_last_residue = (j == len(result.match_string) - 1) and (polymer_type == gemmi.PolymerType.PeptideL)
+        # if is_last_residue:
+        #     # Add OXT atom to the reference atoms for the last residue
+        #     # Find the C atom to calculate OXT position
+        #     c_atom = ref_name_to_atom.get("C")
+        #     if c_atom is not None:
+        #         # Create a virtual OXT atom
+        #         oxt_atom = type('Atom', (), {
+        #             'GetProp': lambda self, prop: 'OXT' if prop == 'name' else None,
+        #             'GetIdx': lambda self: c_atom.GetIdx(),  # Use C atom's index as reference
+        #             'GetAtomicNum': lambda self: 8,  # Oxygen
+        #             'GetFormalCharge': lambda self: 0,
+        #             'GetChiralTag': lambda self: 0
+        #         })()
+        #         ref_atoms.append(oxt_atom)
 
         # Iterate, always in the same order
         atoms: list[ParsedAtom] = []
@@ -673,7 +673,8 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
         for ref_atom in ref_atoms:
             # Get atom name
             atom_name = ref_atom.GetProp("name")
-
+            if atom_name == "OXT":
+                continue
             # Get coordinates from PDB
             if atom_name == "OP3":
                 # For OP3, check if it exists in the CIF file
