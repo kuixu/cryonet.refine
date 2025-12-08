@@ -54,8 +54,10 @@ class GeometricAdapter:
                     geometric_idx = residue_constants.restype_order[one_letter]
                     self.boltz_to_geometric_map[boltz_3letter] = geometric_idx
                 else:
+                    print(f"Boltz 3letter {boltz_3letter} not in restype_order")
                     self.boltz_to_geometric_map[boltz_3letter] = 20  # UNK
             else:
+                print(f"Boltz 3letter {boltz_3letter} not in prot_token_to_letter")
                 self.boltz_to_geometric_map[boltz_3letter] = 20  # UNK
         
         self.atom14_names_cache = {}
@@ -116,11 +118,30 @@ class GeometricAdapter:
             return torch.ones((B, R), dtype=torch.bool, device=feats["res_type"].device)
 
     def convert(self, coords: torch.Tensor, feats: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-
+        """
+        Convert Boltz all-atom format to GeoMetric format.
+        
+        IMPORTANT: This function only processes PROTEIN residues. 
+        Nucleic acids (DNA/RNA) are filtered out since geometric metrics 
+        (Ramachandran, rotamer, etc.) are protein-specific.
+        """
         B, N_atom, _ = coords.shape
-        _, R, _ = feats["res_type"].shape
         device = coords.device
         
+        # Check if this is a molecule-aware crop with non-protein type
+        molecule_type = feats.get('molecule_type', 'PROTEIN')
+        if molecule_type in ['DNA', 'RNA', 'NONPOLYMER']:
+            # Return empty tensors for non-protein molecules
+            # Geometric losses are only meaningful for proteins
+            A_max = 14
+            _, R, _ = feats["res_type"].shape
+            coords_geo = torch.zeros((B, R, A_max, 3), device=device, dtype=coords.dtype)
+            atom_mask_geo = torch.zeros((B, R, A_max), device=device, dtype=torch.bool)
+            seq_idx = torch.zeros((B, R), device=device, dtype=torch.long)
+            res_mask = torch.zeros((B, R), device=device, dtype=torch.bool)
+            return coords_geo, seq_idx, res_mask, atom_mask_geo
+        
+        _, R, _ = feats["res_type"].shape
         A_max = 14
         coords_geo = torch.zeros((B, R, A_max, 3), device=device, dtype=coords.dtype)
         atom_mask_geo = torch.zeros((B, R, A_max), device=device, dtype=torch.bool)
@@ -135,7 +156,7 @@ class GeometricAdapter:
 
         crop_key = f"{record.id}_{feats.get('crop_start', 0)}_{feats.get('crop_size', len(structure.residues))}"
         if crop_key in self._crop_cache:
-            cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, _ = self._crop_cache[crop_key]
+            cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, protein_res_mask = self._crop_cache[crop_key]
         else:
             crop_start = feats['crop_start']
             crop_size = feats['crop_size']
@@ -148,15 +169,32 @@ class GeometricAdapter:
             cropped_atoms = structure.atoms[global_start:atom_end_global]
 
             residue_names = [res['name'] for res in cropped_residues]
-            seq_indices = [self.boltz_to_geometric_map.get(name, 20) for name in residue_names]
+            # breakpoint()
+            # Map residue names to indices, filtering out non-protein residues
+            # Standard amino acids map to 0-19, non-proteins get 20 (will be masked out)
+            seq_indices = []
+            protein_res_mask = []  # True if this residue is a standard amino acid
+            for name in residue_names:
+                idx = self.boltz_to_geometric_map.get(name, 20)
+                seq_indices.append(idx)
+                protein_res_mask.append(idx < 20)  # Only standard amino acids (0-19) are valid
 
-            self._crop_cache[crop_key] = (cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, None)
+            self._crop_cache[crop_key] = (cropped_residues, cropped_atoms, global_start, residue_names, seq_indices, protein_res_mask)
+
+        # Check if there are any protein residues
+        if not any(protein_res_mask):
+            # No protein residues in this crop, return empty
+            return coords_geo, seq_idx, res_mask, atom_mask_geo
 
         seq_idx_tensor = torch.tensor(seq_indices, device=device, dtype=torch.long)
         seq_idx[:, :len(seq_indices)] = seq_idx_tensor.unsqueeze(0).expand(B, -1)
 
         res_idx_list, atom14_idx_list, coord_idx_list = [], [], []
         for res_idx, residue in enumerate(cropped_residues):
+            # Skip non-protein residues
+            if not protein_res_mask[res_idx]:
+                continue
+                
             res_name = residue['name']
             mapping = self.residue_atom14_map.get(res_name, {})  # {atom_name: atom14_idx}
 
@@ -184,6 +222,11 @@ class GeometricAdapter:
 
             coords_geo[0, res_idx_tensor, atom14_idx_tensor] = coords[0, coord_idx_tensor]
             atom_mask_geo[0, res_idx_tensor, atom14_idx_tensor] = True
+        
+        # Update res_mask to exclude non-protein residues
+        protein_mask_tensor = torch.tensor(protein_res_mask, device=device, dtype=torch.bool)
+        res_mask = res_mask.clone().bool()  # Convert to bool for bitwise operations
+        res_mask[0, :len(protein_res_mask)] = res_mask[0, :len(protein_res_mask)] & protein_mask_tensor
 
         return coords_geo, seq_idx, res_mask, atom_mask_geo
 
@@ -220,7 +263,6 @@ class GeometricMetricWrapper:
         prot.residue_index = torch.arange(R, device=device, dtype=torch.long)
         if crop_key in self._crop_cache:
             gm = self._crop_cache[crop_key]
-            # print(f"🚀 Using cached GeoMetric for crop {crop_key}")
             gm.prot = prot
             gm.build_protein()
             build_prot_time = time.time() - start_time
