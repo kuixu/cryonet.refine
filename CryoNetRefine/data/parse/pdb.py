@@ -29,7 +29,6 @@ def parse_pdb(
 
         doc = structure.make_mmcif_document()
         doc.write_file(tmp_cif_path)
-
         return parse_mmcif(
             path=tmp_cif_path,
             mols=mols,

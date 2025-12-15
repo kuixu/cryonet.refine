@@ -185,8 +185,6 @@ class PredictionDataset(torch.utils.data.Dataset):
             )
             return self.__getitem__(0)
 
-   
-
         # Load conformers
         try:
             molecules = {}
