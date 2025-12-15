@@ -64,7 +64,7 @@ class Engine:
                 self.molecule_aware_cropper = MoleculeTypeAwareSlidingWindowCropper(
                     crop_size=self.max_tokens,
                     overlap_size=0,  
-                    min_crop_size=0
+                    min_crop_size=self.max_tokens
                 )
                 self.cropper = None
                 self.sequence_cropper = None
@@ -160,10 +160,10 @@ class Engine:
         all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
         num_crops = len(all_crops)
         if iteration == 0:
-            print(f"🔄 Using molecule-type-aware cropping for structure")
-            print(f"📊 Structure info: {num_crops} crops")
+            print(f"Using molecule-type-aware cropping for structure")
+            print(f"Structure info: {num_crops} crops")
             crop_info = self.molecule_aware_cropper.get_crop_info(batch)
-            print(f"📊 Molecule type distribution:")
+            print(f"Molecule type distribution:")
             for mol_type, count in crop_info['molecule_type_counts'].items():
                 print(f"  {mol_type}: {count} crops")
             for i, crop in enumerate(all_crops):
@@ -175,7 +175,9 @@ class Engine:
         self.optimizer.zero_grad()
         total_loss = 0.0
         
-        # Process each molecule-aware crop sequentially
+        # Process each molecule-aware crop sequentially.
+        # Keep the aggregated refined_coords on CPU to save GPU memory;
+        # only the current crop will live on GPU.
         refined_coords = torch.zeros_like(batch["template_coords"].squeeze(0))
         loss_dict_list = []
         time_loss_dict_list = []
@@ -196,7 +198,11 @@ class Engine:
             )
             
             # Update refined_coords
-            refined_coords[crop_atom_mask.unsqueeze(0)] = crop_predicted_coords[crop_batch['atom_pad_mask']]
+            refined_coords[crop_atom_mask.unsqueeze(0)] = (
+                crop_predicted_coords[crop_batch['atom_pad_mask']]
+                .detach()
+                .cpu()
+            )
             
             # Accumulate loss (average across crops)
             total_loss += crop_loss / num_crops
@@ -369,8 +375,13 @@ class Engine:
     def refine_step_single_crop(self, crop_batch, target_density=None, iteration=0, data_dir=None, out_dir=None, crop_idx=0):
         """Perform refinement on a single crop."""
         start_time = time.time()
+        # Move only this crop's tensors to the target device.
+        # This avoids putting the whole batch on GPU at once.
+        for key, value in crop_batch.items():
+            if isinstance(value, torch.Tensor):
+                crop_batch[key] = value.to(self.device, non_blocking=True)
+
         initial_coords = crop_batch["template_coords"]
-        
         # Create cache key early for atom types caching
         cache_key = f"crop_{crop_idx}_tokens_{crop_batch['token_pad_mask'].shape[1]}_atoms_{crop_batch['atom_pad_mask'].shape[1]}"
         

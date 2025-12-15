@@ -124,6 +124,9 @@ def probe_style_clash_loss(
 
     return clashscore, soft_n_clashes
 
+
+
+
 def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_root=None, top8000_path=None, data_dir=None, geometric_adapter=None, geometric_wrapper=None, weights=None, is_nucleic_acid=False):
     """
     Compute geometric losses via simplified wrapper.

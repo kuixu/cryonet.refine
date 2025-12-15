@@ -263,6 +263,80 @@ def get_unk_token(dtype: gemmi.PolymerType) -> str:
     return unk
 
 
+def extract_sequence_from_polymer_with_gaps(
+    polymer: gemmi.ResidueSpan,
+    polymer_type: gemmi.PolymerType,
+    chain_id: str,
+) -> tuple[list[str], dict[int, int]]:
+    """
+    Extract sequence from polymer structure, filling gaps to preserve missing residue positions.
+    
+    This function:
+    1. Detects gaps in residue numbering
+    2. Fills gaps with UNK tokens to preserve sequence positions
+    3. Returns both the sequence and a mapping from sequence index to polymer index
+    
+    Parameters
+    ----------
+    polymer : gemmi.ResidueSpan
+        The polymer to process.
+    polymer_type : gemmi.PolymerType
+        The polymer type.
+    chain_id : str
+        The chain identifier for logging.
+        
+    Returns
+    -------
+    tuple[list[str], dict[int, int]]
+        - Extracted sequence with gaps filled with UNK
+        - Mapping from sequence index to polymer index (for residues that exist)
+    """
+    print(f"Extracting sequence with gap detection for chain {chain_id}...")
+    
+    # Get unknown token
+    unk_token = get_unk_token(polymer_type)
+    
+    residue_info = []
+    
+    # Collect all residues with their sequence numbers
+    for polymer_idx, residue in enumerate(polymer):
+        res_name = residue.name
+        seq_id = residue.seqid
+        res_number = seq_id.num
+        residue_info.append((res_number, res_name, polymer_idx))
+    
+    if not residue_info:
+        print(f"    ⚠️  No residues found in chain {chain_id}")
+        return [], {}
+    
+    # Sort by residue number
+    residue_info.sort(key=lambda x: x[0])
+    
+    # Build sequence with gaps filled
+    filled_sequence = []
+    seq_to_polymer_map = {}  # Maps sequence index to polymer index
+    prev_number = None
+    
+    for res_number, res_name, polymer_idx in residue_info:
+        # Check for gaps and fill with UNK
+        if prev_number is not None:
+            gap_size = res_number - prev_number - 1
+            if gap_size > 0:
+                print(f"    🔍 Gap detected: positions {prev_number + 1} to {res_number - 1} ({gap_size} residues)")
+                for gap_i in range(gap_size):
+                    filled_sequence.append(unk_token)
+                    # Gap positions don't map to polymer (will be marked as not present)
+        
+        # Add current residue
+        seq_idx = len(filled_sequence)
+        filled_sequence.append(res_name)
+        seq_to_polymer_map[seq_idx] = polymer_idx
+        prev_number = res_number
+    
+    print(f"    ✅ Extracted sequence length: {len(filled_sequence)} (includes {filled_sequence.count(unk_token)} gaps)")
+    return filled_sequence, seq_to_polymer_map
+
+
 def compute_covalent_ligands(
     connections: list[gemmi.Connection],
     subchain_map: dict[tuple[str, int], str],
@@ -567,42 +641,78 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
         If the alignment fails.
 
     """
+    # ====================== NEW: Handle missing sequence ======================
+    # If sequence is empty or None, extract from structure with gap detection
+    use_direct_mapping = False
+    seq_to_polymer_map = None
+    
+    if not sequence or len(sequence) == 0:
+        print(f"Chain {chain_id}: No header sequence, extracting from structure")
+        sequence, seq_to_polymer_map = extract_sequence_from_polymer_with_gaps(
+            polymer, polymer_type, chain_id
+        )
+        if not sequence:
+            print(f"Chain {chain_id}: Failed to extract sequence")
+            return None
+        use_direct_mapping = True  # Use direct mapping instead of alignment
+    # =========================================================================
+    
     # Ignore microheterogeneities (pick first)
     sequence = [gemmi.Entity.first_mon(item) for item in sequence]
 
-    # Align full sequence to polymer residues
-    # This is a simple way to handle all the different numbering schemes
-    result = gemmi.align_sequence_to_polymer(
-        sequence,
-        polymer,
-        polymer_type,
-        gemmi.AlignmentScoring(),
-    )
     # Get coordinates and masks
-    i = 0
     ref_res = set(const.tokens)
     parsed = []
-    for j, match in enumerate(result.match_string):
-        # Get residue name from sequence
-        res_name = sequence[j]
-
-        # Check if we have a match in the structure
-        res = None
-        name_to_atom = {}
-
-        if match == "|":
-            # Get pdb residue
-            res = polymer[i]
-            name_to_atom = {a.name.upper(): a for a in res}
-
-            # Double check the match
-            if res.name != res_name:
-                msg = "Alignment mismatch!"
-                raise ValueError(msg, res.name, res_name)
-
-            # Increment polymer index
-            i += 1
-
+    
+    # Prepare iteration: either direct mapping or alignment-based
+    if use_direct_mapping:
+        # ========== Direct mapping mode (no alignment needed) ==========
+        print(f"    Using direct mapping mode for chain {chain_id}")
+        # Create an iterable that yields (j, res_name, res, name_to_atom)
+        def direct_map_iterator():
+            for j, res_name in enumerate(sequence):
+                if j in seq_to_polymer_map:
+                    polymer_idx = seq_to_polymer_map[j]
+                    res = polymer[polymer_idx]
+                    name_to_atom = {a.name.upper(): a for a in res}
+                else:
+                    # This is a gap position (missing residue)
+                    res = None
+                    name_to_atom = {}
+                yield j, res_name, res, name_to_atom
+        residue_iterator = direct_map_iterator()
+    else:
+        # ========== Alignment mode (original logic) ==========
+        # Align full sequence to polymer residues
+        result = gemmi.align_sequence_to_polymer(
+            sequence,
+            polymer,
+            polymer_type,
+            gemmi.AlignmentScoring(),
+        )
+        # Create an iterable that yields (j, res_name, res, name_to_atom)
+        def alignment_iterator():
+            i = 0
+            for j, match in enumerate(result.match_string):
+                res_name = sequence[j]
+                res = None
+                name_to_atom = {}
+                
+                if match == "|":
+                    res = polymer[i]
+                    name_to_atom = {a.name.upper(): a for a in res}
+                    
+                    # Double check the match
+                    if res.name != res_name:
+                        msg = "Alignment mismatch!"
+                        raise ValueError(msg, res.name, res_name)
+                    
+                    i += 1
+                yield j, res_name, res, name_to_atom
+        residue_iterator = alignment_iterator()
+    
+    # ========== Unified residue processing loop ==========
+    for j, res_name, res, name_to_atom in residue_iterator:
         # Map MSE to MET, put the selenium atom in the sulphur column
         if res_name == "MSE":
             res_name = "MET"
@@ -969,16 +1079,21 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             }:
                 continue
 
+            # ====================== NEW: Handle missing sequence in entity ======================
+            # Get sequence from entity, or empty list if not available
+            sequence_from_entity = entity.full_sequence if hasattr(entity, 'full_sequence') and entity.full_sequence else []
+            
             # Add polymer if successful
             parsed_polymer = parse_polymer(
                 polymer=raw_chain,
                 polymer_type=entity.polymer_type,
-                sequence=entity.full_sequence,
+                sequence=sequence_from_entity,
                 chain_id=subchain_id,
                 entity=entity.name,
                 mols=mols,
                 moldir=moldir,
             )
+            # ================================================================================
             if parsed_polymer is not None:
                 chains.append(parsed_polymer)
 
@@ -1047,17 +1162,21 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                     "Rna",
                 }:
                     continue
-
+                # ====================== NEW: Handle missing sequence in entity ======================
+                # Get sequence from entity, or empty list if not available
+                sequence_from_entity = entity.full_sequence if hasattr(entity, 'full_sequence') and entity.full_sequence else []
+                
                 # Add polymer if successful
                 parsed_polymer = parse_polymer(
                     polymer=raw_chain,
                     polymer_type=entity.polymer_type,
-                    sequence=entity.full_sequence,
+                    sequence=sequence_from_entity,
                     chain_id=subchain_id,
                     entity=entity.name,
                     mols=mols,
                     moldir=moldir,
                 )
+                # ================================================================================
                 if parsed_polymer is not None:
                     ensemble_chains[ref_chain_map[subchain_id]] = parsed_polymer
 

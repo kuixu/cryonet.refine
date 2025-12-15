@@ -23,11 +23,13 @@ class MoleculeTypeAwareSlidingWindowCropper:
         overlap_size : int
             Unused, kept for API compatibility
         min_crop_size : int
-            Unused, kept for API compatibility
+            Minimum number of tokens per crop. If the last crop is smaller than this,
+            it will borrow tokens from the previous crop (creating overlap) to reach min_crop_size.
+            The previous crop remains unchanged.
         """
         self.crop_size = crop_size
         self.overlap_size = overlap_size  # Unused but kept for compatibility
-        self.min_crop_size = min_crop_size  # Unused but kept for compatibility
+        self.min_crop_size = min_crop_size if min_crop_size > 0 else 0
     
     def get_molecule_type_aware_crops(self, batch: Dict) -> List[Tuple]:
         """
@@ -84,9 +86,28 @@ class MoleculeTypeAwareSlidingWindowCropper:
             num_tokens = len(token_indices)
             
             # Simple sliding window: split into chunks of at most crop_size
+            crop_boundaries = []  # List of (start, end) tuples
             start = 0
             while start < num_tokens:
                 end = min(start + self.crop_size, num_tokens)
+                crop_boundaries.append((start, end))
+                start = end
+            
+            # Apply min_crop_size constraint: if last crop is too small, borrow tokens from previous crop
+            if self.min_crop_size > 0 and len(crop_boundaries) > 1:
+                last_start, last_end = crop_boundaries[-1]
+                last_size = last_end - last_start
+                
+                if last_size < self.min_crop_size:
+                    # Borrow tokens from previous crop (creating overlap) to reach min_crop_size
+                    # New last crop start = last_end - min_crop_size
+                    new_last_start = max(0, last_end - self.min_crop_size)
+                    
+                    # Update last crop boundary (previous crop remains unchanged)
+                    crop_boundaries[-1] = (new_last_start, last_end)
+            
+            # Create crops from boundaries
+            for start, end in crop_boundaries:
                 crop_token_indices = token_indices[start:end]
                 
                 # Extract sequence info for this crop
@@ -106,7 +127,6 @@ class MoleculeTypeAwareSlidingWindowCropper:
                 
                 all_crops.append((global_crop_idx, crop_token_indices, mol_type_name, crop_metadata))
                 global_crop_idx += 1
-                start = end
         
         return all_crops
     
