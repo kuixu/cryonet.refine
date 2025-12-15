@@ -106,18 +106,23 @@ def get_mol(ccd: str, mols: dict, moldir: str) -> Mol:
     """Get mol from CCD code.
 
     Return mol with ccd from mols if it is in mols. Otherwise load it from moldir,
-    add it to mols, and return the mol.
+    add it to mols, and return the mol. Returns None if the molecule cannot be found.
     """
     mol = mols.get(ccd)
     if mol is None:
         # Load molecule
-        mol = load_molecules(moldir, [ccd])[ccd]
-
-        # Add to resource
-        if isinstance(mols, dict):
-            mols[ccd] = mol
-        else:
-            mols.set(ccd, mol)
+        try:
+            mol = load_molecules(moldir, [ccd])[ccd]
+            
+            # Add to resource
+            if isinstance(mols, dict):
+                mols[ccd] = mol
+            else:
+                mols.set(ccd, mol)
+        except (ValueError, KeyError) as e:
+            # Skip molecules that cannot be found (e.g., metal ions like MG)
+            print(f"⚠️  Warning: Skipping ligand '{ccd}' - not found in CCD database: {e}")
+            return None
 
     return mol
 
@@ -722,7 +727,9 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
         # Handle non-standard residues
         elif res_name not in ref_res:
             modified_mol = get_mol(res_name, mols, moldir)
-            if modified_mol is not None:
+            if modified_mol is None:
+                # Skip residue if mol not found
+                continue
                 residue = parse_ccd_residue(
                     name=res_name,
                     ref_mol=modified_mol,
@@ -737,6 +744,9 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
 
         # Load regular residues
         ref_mol = get_mol(res_name, mols, moldir)
+        if ref_mol is None:
+            # Skip residue if mol not found
+            continue
         ref_mol = AllChem.RemoveHs(ref_mol, sanitize=False)
 
         # Only use reference atoms set in constants
@@ -1071,8 +1081,44 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
         # Parse a polymer
         if entity_type == "Polymer":
+            # Check polymer type
+            polymer_type_name = entity.polymer_type.name
+            
+            # If polymer type is Unknown, try to infer from residues
+            if polymer_type_name == "Unknown":
+                # Sample first few residues to infer type
+                sample_residues = list(raw_chain)[:10]
+                sample_names = [r.name for r in sample_residues]
+                
+                # Check if it's protein (standard amino acids)
+                protein_residues = {'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 
+                                   'HIS', 'ILE', 'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 
+                                   'THR', 'TRP', 'TYR', 'VAL', 'MSE'}
+                # Check if it's nucleic acid
+                nucleic_residues = {'A', 'C', 'G', 'T', 'U', 'DA', 'DC', 'DG', 'DT'}
+                
+                protein_count = sum(1 for n in sample_names if n in protein_residues)
+                nucleic_count = sum(1 for n in sample_names if n in nucleic_residues)
+                
+                if protein_count > nucleic_count:
+                    print(f"⚠️  Inferred polymer type 'PeptideL' from residues for chain {subchain_id}")
+                    polymer_type_name = "PeptideL"
+                elif nucleic_count > 0:
+                    # Check if DNA or RNA
+                    has_thymine = any(n in {'T', 'DT'} for n in sample_names)
+                    has_uracil = any(n == 'U' for n in sample_names)
+                    if has_thymine:
+                        print(f"⚠️  Inferred polymer type 'Dna' from residues for chain {subchain_id}")
+                        polymer_type_name = "Dna"
+                    else:
+                        print(f"⚠️  Inferred polymer type 'Rna' from residues for chain {subchain_id}")
+                        polymer_type_name = "Rna"
+                else:
+                    print(f"⚠️  Could not infer polymer type for chain {subchain_id}, skipping")
+                    continue
+            
             # Skip PeptideD, DnaRnaHybrid, Pna, Other
-            if entity.polymer_type.name not in {
+            if polymer_type_name not in {
                 "PeptideL",
                 "Dna",
                 "Rna",
@@ -1083,10 +1129,24 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             # Get sequence from entity, or empty list if not available
             sequence_from_entity = entity.full_sequence if hasattr(entity, 'full_sequence') and entity.full_sequence else []
             
+            # Use inferred polymer type if available, otherwise use entity's polymer type
+            if polymer_type_name != entity.polymer_type.name:
+                # Create a new PolymerType object from the inferred name
+                if polymer_type_name == "PeptideL":
+                    actual_polymer_type = gemmi.PolymerType.PeptideL
+                elif polymer_type_name == "Dna":
+                    actual_polymer_type = gemmi.PolymerType.Dna
+                elif polymer_type_name == "Rna":
+                    actual_polymer_type = gemmi.PolymerType.Rna
+                else:
+                    actual_polymer_type = entity.polymer_type
+            else:
+                actual_polymer_type = entity.polymer_type
+            
             # Add polymer if successful
             parsed_polymer = parse_polymer(
                 polymer=raw_chain,
-                polymer_type=entity.polymer_type,
+                polymer_type=actual_polymer_type,
                 sequence=sequence_from_entity,
                 chain_id=subchain_id,
                 entity=entity.name,
@@ -1113,6 +1173,10 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
                 ligand: gemmi.Residue
                 ligand_mol = get_mol(ligand.name, mols, moldir)
+                
+                # Skip ligand if mol not found (e.g., metal ions)
+                if ligand_mol is None:
+                    continue
 
                 residue = parse_ccd_residue(
                     name=ligand.name,
@@ -1132,7 +1196,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                         type=const.chain_type_ids["NONPOLYMER"],
                     )
                 )
-
     # If no chains parsed fail
     if not chains:
         msg = "No chains parsed!"
@@ -1196,6 +1259,10 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
                     ligand: gemmi.Residue
                     ligand_mol = get_mol(ligand.name, mols, moldir)
+                    
+                    # Skip ligand if mol not found (e.g., metal ions)
+                    if ligand_mol is None:
+                        continue
 
                     residue = parse_ccd_residue(
                         name=ligand.name,
