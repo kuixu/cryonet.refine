@@ -181,31 +181,33 @@ def to_mmcif(
                         pos = atom_coords[i]
 
                         if record_type != "HETATM":
-                            # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
-                            biso = (
-                                0.00 # change from 100.00 to 0.00 by huangfuyao
-                                if plddts is None
-                                else round(
-                                    plddts[res_num + ligand_index_offset].item() * 100,
-                                    3,
-                                )
-                            )
+                            # # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
+                            # biso = (
+                            #     0.00 # change from 100.00 to 0.00 by huangfuyao
+                            #     if plddts is None
+                            #     else round(
+                            #         plddts[res_num + ligand_index_offset].item() * 100,
+                            #         3,
+                            #     )
+                            # )
+                                                        # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
+                            biso = atom['bfactor']
                             prev_polymer_resnum = res_num
                         else:
                             # If not a polymer resnum, we can get index into plddts by adding offset relative to previous polymer resnum.
                             ligand_index_offset += 1
-                            biso = (
-                                0.00 # change from 100.00 to 0.00 by huangfuyao
-                                if plddts is None
-                                else round(
-                                    plddts[
-                                        prev_polymer_resnum + ligand_index_offset
-                                    ].item()
-                                    * 100,
-                                    3,
-                                )
-                            )
-
+                            # biso = (
+                            #     0.00 # change from 100.00 to 0.00 by huangfuyao
+                            #     if plddts is None
+                            #     else round(
+                            #         plddts[
+                            #             prev_polymer_resnum + ligand_index_offset
+                            #         ].item()
+                            #         * 100,
+                            #         3,
+                            #     )
+                            # )
+                            biso = atom['bfactor']
                         yield Atom(
                             asym_unit=asym_unit_map[chain_idx],
                             type_symbol=element,
