@@ -68,7 +68,7 @@ def refine(
     set_seed(seed)
     data = Path(data).expanduser()
     out_dir = Path(out_dir).expanduser()
-    out_dir = out_dir / f"{data.stem}_{out_suffix}"
+    # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
