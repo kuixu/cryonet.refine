@@ -33,8 +33,14 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--target_density", type=click.Path(exists=True), help="Target density map (.mrc file)", default=None)
 @click.option("--resolution", type=float, help="Resolution for density map operations", default=None)
 @click.option("--max_tokens", type=int, help="Maximum number of tokens for cropping (0 to disable)", default=512)
+@click.option("--gamma_0", type=float, help="Gamma 0 parameter", default=-0.5)
+@click.option("--recycles", type=int, help="Number of refinement recycles", default=3)
 @click.option("--enable_cropping", is_flag=True, help="Enable cropping for large structures", default=True)
 @click.option("--cond_early_stop", type=str, help="Condition early stop", default="loss")
+@click.option("--clash", type=float, help="Weight for clash loss", default=0.1)
+@click.option("--den", type=float, help="Weight for density loss", default=20.0)
+@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
+@click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 def refine(
     data: str,
@@ -46,8 +52,14 @@ def refine(
     target_density: Optional[str] = None,
     resolution: float = 1.9,
     max_tokens: int = 512,
+    recycles: int = 3,
+    gamma_0: float = -0.5,
     enable_cropping: bool = True,
     cond_early_stop: str = "loss",
+    clash: int = 0.1,
+    den: int = 20.0,
+    learning_rate: float = 1.8e-4,
+    max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
 
 ) -> None:
@@ -56,7 +68,7 @@ def refine(
     set_seed(seed)
     data = Path(data).expanduser()
     out_dir = Path(out_dir).expanduser()
-    # out_dir = out_dir / f"cryorefine_{data.stem}"
+    out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
@@ -76,7 +88,7 @@ def refine(
         extra_mols_dir=processed_dir / "mols" if (processed_dir / "mols").exists() else None,
     )
     # Setup model parameters
-    diffusion_params = DiffusionParams()
+    diffusion_params = DiffusionParams(gamma_0=gamma_0, max_norm_sigmas_value=max_norm_sigmas_value)
     pairformer_args = PairformerArgs()
     # Load model
     if checkpoint is None:
@@ -105,6 +117,10 @@ def refine(
     target_density_obj = DensityInfo(mrc_path=target_density, resolution=resolution)
     refine_args = RefineArgs()
     refine_args.data_dir = data_dir
+    refine_args.num_recycles = recycles
+    refine_args.weight_dict["clash"] = clash
+    refine_args.weight_dict["den"] = den
+    refine_args.learning_rate = learning_rate
     pdb_id = data[0].name.split('.')[0]
     refiner = Engine(
         model_module, 
@@ -130,13 +146,11 @@ def refine(
     # Perform refinement for each structure
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx}")
-        # Move batch to device with optimizations
-        # Use non_blocking transfer for faster GPU transfer
-        for key, value in batch.items():
-            if isinstance(value, torch.Tensor):
-                batch[key] = value.to(device, non_blocking=True)
-        # Perform refinement
-        refined_coords, _ = refiner.refine(batch, target_density_obj, processed.template_dir, out_dir,cond_early_stop=cond_early_stop)
+        # NOTE:
+        # Do NOT move the whole batch to GPU here.
+        # Each crop will be moved to GPU individually inside the Engine,
+        # so that GPU memory is only used for the current crop.
+        refined_coords, _ = refiner.refine(batch, target_density_obj, processed.template_dir, out_dir, cond_early_stop=cond_early_stop)
         # Get best results info from refiner
         best_iteration = getattr(refiner, 'best_iteration', None)
         best_loss = getattr(refiner, 'best_loss', None)
