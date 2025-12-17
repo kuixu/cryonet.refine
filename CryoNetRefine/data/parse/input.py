@@ -38,12 +38,12 @@ class PairformerArgs:
 class RefineArgs:
     """Refinement specific arguments."""
     
-    learning_rate: float = 1.8e-3
+    learning_rate: float = 1.8e-4
     num_recycles: int = 300
     early_stopping_patience: int = 20
     resolution: float = 1.9
     weight_dict: dict = field(default_factory=lambda: {
-        "den": 30.0, 
+        "den": 20.0, 
         "geometric": 1.0,
         "rama": 500.0,
         "rotamer": 500.0,
@@ -51,7 +51,7 @@ class RefineArgs:
         "angle": 1,
         "cbeta": 1.0,
         "ramaz": 1.00,
-        "violation": 1000.0,
+        "violation": 0.0,
         "clash": 0.1,
     })
     data_dir: str | None = None
