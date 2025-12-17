@@ -38,12 +38,12 @@ class PairformerArgs:
 class RefineArgs:
     """Refinement specific arguments."""
     
-    learning_rate: float = 1.8e-4
+    learning_rate: float = 1.8e-3
     num_recycles: int = 300
     early_stopping_patience: int = 20
     resolution: float = 1.9
     weight_dict: dict = field(default_factory=lambda: {
-        "den": 20.0, 
+        "den": 30.0, 
         "geometric": 1.0,
         "rama": 500.0,
         "rotamer": 500.0,
@@ -107,22 +107,27 @@ def check_inputs(data: Path) -> list[Path]:
     click.echo("Checking input data.")
 
     # Check if data is a directory
-    if data.is_dir():
-        data: list[Path] = list(data.glob("*"))
-        for d in data:
-            if d.is_dir():
-                msg = f"Found directory {d} instead of .cif or .pdb."
-                raise RuntimeError(msg)
-            if d.suffix.lower() not in (".cif", ".pdb"):
-                msg = (
-                    f"Unable to parse filetype {d.suffix}, "
-                    "please provide a .cif or .pdb file."
-                )
-                raise RuntimeError(msg)
-    else:
-        data = [data]
+    # if data.is_dir():
+    #     data: list[Path] = list(data.glob("*"))
+    #     for d in data:
+    #         if d.is_dir():
+    #             msg = f"Found directory {d} instead of .cif or .pdb."
+    #             raise RuntimeError(msg)
+    #         if d.suffix.lower() not in (".cif", ".pdb"):
+    #             msg = (
+    #                 f"Unable to parse filetype {d.suffix}, "
+    #                 "please provide a .cif or .pdb file."
+    #             )
+    #             raise RuntimeError(msg)
+    # else:
+    #     data = [data]
 
-    return data
+    #if not endwith cif or pdb, raise error
+    if data.suffix.lower() not in (".cif", ".pdb"):
+        msg = f"Unable to parse filetype {data.suffix}, please provide a .cif or .pdb file."
+        raise RuntimeError(msg)
+
+    return [data]
 
 
 def process_input(  # noqa: C901, PLR0912, PLR0915, D103
@@ -172,6 +177,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
 @rank_zero_only
 def process_inputs(
     data: list[Path], # [PosixPath('/home/huangfuyao/proj/boltz/examples/6cvm_A_200AA.yaml')]
+    data_stem: str,
     out_dir: Path, # /home/huangfuyao/proj/boltz/out/boltz_results_6cvm_A_200AA
     mol_dir: Path,
     preprocessing_threads: int = 1,
@@ -194,12 +200,11 @@ def process_inputs(
     """
    
     # Check if records exist at output path
-    records_dir = out_dir / "processed" / "records" # boltz/out/boltz_results_6cvm_A_200AA/processed/records
+    records_dir = out_dir / f"processed_{data_stem}" / "records" # boltz/out/boltz_results_6cvm_A_200AA/processed/records
     if records_dir.exists():
         # Load existing records
         existing = [Record.load(p) for p in records_dir.glob("*.json")]
         processed_ids = {record.id for record in existing}
-
         # Filter to missing only
         data = [d for d in data if d.stem not in processed_ids]
 
@@ -211,12 +216,12 @@ def process_inputs(
         else:
             click.echo("All inputs are already processed.")
             updated_manifest = Manifest(existing)
-            updated_manifest.dump(out_dir / "processed" / "manifest.json")
+            updated_manifest.dump(out_dir / f"processed_{data_stem}" / "manifest.json")
 
     # Create output directories
-    records_dir = out_dir / "processed" / "records"
-    processed_templates_dir = out_dir / "processed" / "templates"
-    processed_mols_dir = out_dir / "processed" / "mols"
+    records_dir = out_dir / f"processed_{data_stem}" / "records"
+    processed_templates_dir = out_dir / f"processed_{data_stem}" / "templates"
+    processed_mols_dir = out_dir / f"processed_{data_stem}" / "mols"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     records_dir.mkdir(parents=True, exist_ok=True)
@@ -250,6 +255,6 @@ def process_inputs(
     # Load all records and write manifest
     records = [Record.load(p) for p in records_dir.glob("*.json")]
     manifest = Manifest(records)
-    manifest.dump(out_dir / "processed" / "manifest.json")
+    manifest.dump(out_dir / f"processed_{data_stem}" / "manifest.json")
 
 
