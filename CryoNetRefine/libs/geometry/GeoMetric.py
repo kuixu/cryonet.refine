@@ -204,9 +204,16 @@ class GeoMetric:
         if not self.prot.torsion_angles_sin_cos.requires_grad:
             self.prot.torsion_angles_sin_cos.requires_grad_(True)
 
-    def _interpolate_rotamer_scores_differentiable(self, chis_sel, ndt, num_chis):
+    def _interpolate_rotamer_scores_differentiable(self, chis_sel, ndt, num_chis, resname=None):
         """
-        🚀 Differentiable linear interpolation method to ensure numerical consistency
+        🚀 Differentiable N-dimensional interpolation following mmtbx algorithm
+        Implements 2^n neighbor weighted interpolation for accurate rotamer scoring
+        
+        Args:
+            chis_sel: [n_res, num_chis] tensor of chi angles in degrees
+            ndt: NDimTable object with lookup data
+            num_chis: number of chi angles
+            resname: residue name for symmetry handling
         """
         device = chis_sel.device
         n_res = chis_sel.shape[0]
@@ -215,75 +222,123 @@ class GeoMetric:
             return torch.zeros(0, device=device)
         
         # Get lookup table parameters
-        minVal = torch.tensor(ndt.minVal, device=device, dtype=torch.float32)
-        wBin = torch.tensor(ndt.wBin, device=device, dtype=torch.float32)
-        nBins = torch.tensor(ndt.nBins, device=device, dtype=torch.long)
+        # Safely extract parameters, handling potential length mismatches
+        actual_dims = min(num_chis, len(ndt.minVal), len(ndt.wBin), len(ndt.nBins), len(ndt.doWrap))
+        
+        # If actual dimensions differ from num_chis, adjust input
+        if actual_dims < num_chis:
+            chis_sel = chis_sel[:, :actual_dims]
+            num_chis = actual_dims
+        
+        minVal = torch.tensor(ndt.minVal[:num_chis], device=device, dtype=torch.float32)
+        wBin = torch.tensor(ndt.wBin[:num_chis], device=device, dtype=torch.float32)
+        nBins = torch.tensor(ndt.nBins[:num_chis], device=device, dtype=torch.long)
+        doWrap = list(ndt.doWrap[:num_chis])  # Keep as list for wrapping logic
         lookup_table = ndt.lookupTable.clone().detach().to(device=device, dtype=torch.float32)
         
-        # Normalize angle: from [-180, 180] to [0, 360]
-        chis_normalized = torch.where(chis_sel < 0, chis_sel + 360.0, chis_sel)
+        # Apply symmetry for ASP, GLU, PHE, TYR (last chi angle mod 180)
+        chis_normalized = chis_sel.clone()
+        if resname and resname.lower() in ['asp', 'glu', 'phe', 'tyr'] and num_chis > 0:
+            # Last chi angle needs mod 180 treatment
+            last_chi = chis_normalized[:, num_chis-1]
+            last_chi = last_chi % 360.0
+            last_chi = torch.where(last_chi < 0, last_chi + 360.0, last_chi)
+            last_chi = last_chi % 180.0  # Apply 180-degree symmetry
+            chis_normalized[:, num_chis-1] = last_chi
+        
+        # Normalize all angles to [0, 360)
         chis_normalized = chis_normalized % 360.0
+        chis_normalized = torch.where(chis_normalized < 0, chis_normalized + 360.0, chis_normalized)
         
-        # Compute the continuous index
-        continuous_idx = (chis_normalized - minVal) / wBin
+        # Find home bin (whereIs in mmtbx)
+        va_home_float = (chis_normalized - minVal.unsqueeze(0)) / wBin.unsqueeze(0)
+        va_home = torch.floor(va_home_float).long()
+        # Clamp to valid range [0, nBins-1] for each dimension
+        va_home = torch.max(va_home, torch.zeros_like(va_home))
+        va_home = torch.min(va_home, (nBins.unsqueeze(0) - 1).expand_as(va_home))
         
-        # Compute integer indices
-        idx_low = torch.floor(continuous_idx).long()
-        idx_high = torch.ceil(continuous_idx).long()
+        # Calculate bin center coordinates
+        va_home_ctr = minVal.unsqueeze(0) + wBin.unsqueeze(0) * (va_home.float() + 0.5)
         
-        # Compute weights for linear interpolation
-        weights = continuous_idx - idx_low.float()
+        # Determine neighbor direction and contribution weight for each dimension
+        # If point < bin_center, neighbor is lower (home-1), else higher (home+1)
+        va_neighbor = torch.where(
+            chis_normalized < va_home_ctr,
+            va_home - 1,
+            va_home + 1
+        )
         
-        # Clamp indices within the valid range
-        idx_low = torch.clamp(idx_low, torch.tensor(0, device=device), nBins - 1)
-        idx_high = torch.clamp(idx_high, torch.tensor(0, device=device), nBins - 1)
+        # Calculate relative contribution from neighbor (always in [0, 0.5])
+        va_contrib = torch.abs((chis_normalized - va_home_ctr) / wBin.unsqueeze(0))
         
         scores = torch.zeros(n_res, device=device)
         
-        for i in range(n_res):
-            # For each residue, perform linear interpolation
-            if num_chis == 1:
-                # 1D interpolation
-                val_low = lookup_table[idx_low[i, 0]]
-                val_high = lookup_table[idx_high[i, 0]]
-                score = val_low + weights[i, 0] * (val_high - val_low)
-            elif num_chis == 2 and len(nBins) >= 2:
-                # 2D interpolation - use flat indices
-                # Calculate flat indices for each corner of the grid cell
-                flat_idx_ll = idx_low[i, 0] * int(nBins[1]) + idx_low[i, 1]
-                flat_idx_lh = idx_low[i, 0] * int(nBins[1]) + idx_high[i, 1]
-                flat_idx_hl = idx_high[i, 0] * int(nBins[1]) + idx_low[i, 1]
-                flat_idx_hh = idx_high[i, 0] * int(nBins[1]) + idx_high[i, 1]
-                
-                # Clamp flat indices within valid range
-                flat_idx_ll = torch.clamp(flat_idx_ll, 0, lookup_table.numel() - 1)
-                flat_idx_lh = torch.clamp(flat_idx_lh, 0, lookup_table.numel() - 1)
-                flat_idx_hl = torch.clamp(flat_idx_hl, 0, lookup_table.numel() - 1)
-                flat_idx_hh = torch.clamp(flat_idx_hh, 0, lookup_table.numel() - 1)
-                
-                val_ll = lookup_table.flatten()[flat_idx_ll]
-                val_lh = lookup_table.flatten()[flat_idx_lh]
-                val_hl = lookup_table.flatten()[flat_idx_hl]
-                val_hh = lookup_table.flatten()[flat_idx_hh]
-                
-                # Bilinear interpolation
-                val_l = val_ll + weights[i, 1] * (val_lh - val_ll)
-                val_h = val_hl + weights[i, 1] * (val_hh - val_hl)
-                score = val_l + weights[i, 0] * (val_h - val_l)
-            else:
-                # For higher dimensions or mismatched shapes, use nearest neighbor interpolation
-                flat_idx = 0
-                stride = 1
-                for j in range(min(num_chis, len(nBins)) - 1, -1, -1):
-                    flat_idx += idx_low[i, j] * stride
-                    if j < len(nBins):
-                        stride *= int(nBins[j])
-                flat_idx = torch.clamp(flat_idx, 0, lookup_table.numel() - 1)
-                score = lookup_table.flatten()[flat_idx]
+        # Loop over all 2^num_chis neighboring bins
+        num_bins_total = 1 << num_chis  # 2^num_chis
+        
+        for bin_mask in range(num_bins_total):
+            # Initialize coefficient and current bin indices
+            coeff = torch.ones(n_res, device=device)
+            va_current = torch.zeros((n_res, num_chis), dtype=torch.long, device=device)
             
-            scores[i] = score
+            # For each dimension, check the bit in bin_mask
+            for dim in range(num_chis):
+                if bin_mask & (1 << dim) == 0:
+                    # Bit is off: use va_home and (1 - va_contrib)
+                    va_current[:, dim] = va_home[:, dim]
+                    coeff *= (1.0 - va_contrib[:, dim])
+                else:
+                    # Bit is on: use va_neighbor and va_contrib
+                    va_current[:, dim] = va_neighbor[:, dim]
+                    coeff *= va_contrib[:, dim]
+            
+            # Apply wrapping and clamping
+            for dim in range(num_chis):
+                # Safe access to doWrap with fallback to True (most chi angles are periodic)
+                do_wrap_dim = doWrap[dim] if dim < len(doWrap) else True
+                
+                if do_wrap_dim:
+                    # Apply wrapping for periodic dimensions
+                    va_current[:, dim] = va_current[:, dim] % nBins[dim].item()
+                else:
+                    # Clamp to valid range for non-periodic dimensions
+                    va_current[:, dim] = torch.clamp(va_current[:, dim], 0, nBins[dim].item() - 1)
+            
+            # Convert multidimensional indices to flat indices
+            flat_indices = self._bin2index_batch(va_current, nBins)
+            flat_indices = torch.clamp(flat_indices, 0, lookup_table.numel() - 1)
+            
+            # Lookup values and accumulate weighted contribution
+            lookup_flat = lookup_table.flatten()
+            values = lookup_flat[flat_indices]
+            scores += coeff * values
         
         return scores
+    
+    def _bin2index_batch(self, bins, nBins):
+        """
+        Convert multidimensional bin indices to flat array indices (batch version)
+        
+        Args:
+            bins: [n_res, n_dim] tensor of bin indices
+            nBins: [n_dim] tensor of number of bins per dimension
+        Returns:
+            [n_res] tensor of flat indices
+        """
+        n_res, n_dim = bins.shape
+        device = bins.device
+        
+        idx = torch.zeros(n_res, dtype=torch.long, device=device)
+        
+        # Build flat index: idx = bin[0] * nBins[1] * ... + bin[1] * nBins[2] * ... + bin[-1]
+        for i in range(n_dim - 1):
+            idx += bins[:, i]
+            idx *= nBins[i + 1]
+        
+        # Add last dimension
+        idx += bins[:, n_dim - 1]
+        
+        return idx
 
     def build_protein(self):
         device = self.prot.atom14_positions.device if isinstance(self.prot.atom14_positions, torch.Tensor) else 'cpu'
@@ -672,67 +727,93 @@ class GeoMetric:
         }
 
     def rotamer_outliers(self) -> Dict[str, torch.Tensor]:
-
-        OUTLIER_THRESHOLD = 0.02
+        """
+        Calculate rotamer outliers following mmtbx methodology with proper symmetry handling
+        
+        Returns:
+            Dictionary containing:
+            - rotamer_outliers: penalty values for outliers
+            - chi_scores: probability scores from rotamer library (0.0-1.0)
+            - chi_angles: computed chi angles
+            - outliers_count: number of outliers (score < 0.003)
+            - favored_count: number of favored rotamers (score >= 0.02)
+        """
+        OUTLIER_THRESHOLD = 0.003
         ALLOWED_THRESHOLD = 0.02
         device = self.atom_pos.device
         prot_len = self.prot_len
 
+        # Get chi angles from torsion angles (sin/cos format)
         torsion_angles = (
             self.prot.torsion_angles_sin_cos
             if isinstance(self.prot.torsion_angles_sin_cos, torch.Tensor)
             else torch.tensor(self.prot.torsion_angles_sin_cos, device=device)
         )
-        # chi_angles = torch.rad2deg(
-        #     torch.atan2(torsion_angles[:, 3:7, 0], torch.clamp(torsion_angles[:, 3:7, 1], min=1e-8))
-        # )  # [prot_len, 4]
-        y = torsion_angles[:,3:7,0]
-        x = torsion_angles[:,3:7,1]
+        
+        # Reconstruct angles from sin/cos with numerical stability
+        y = torsion_angles[:, 3:7, 0]  # sin values for chi1-chi4
+        x = torsion_angles[:, 3:7, 1]  # cos values for chi1-chi4
         eps = 1e-8
         x_safe = x + (x.abs() < eps).float() * eps
         chi_angles = torch.rad2deg(torch.atan2(y, x_safe))
 
-
-        chi_scores = torch.full((prot_len,), -1.0, device=device, requires_grad=True)
+        # Initialize scores to -1 (indicates not evaluated)
+        chi_scores = torch.full((prot_len,), -1.0, device=device)
 
         if isinstance(self.prot.aatype, torch.Tensor):
             res_type_idx = self.prot.aatype.to(device)
         else:
             res_type_idx = torch.tensor(self.prot.aatype, device=device, dtype=torch.long)
 
+        # Process each amino acid type
         for resname, ndt in aaTables.items():
             num_chis = chisPerAA[resname]
-            minVal = torch.tensor(ndt.minVal[:num_chis], device=device)
-            wBin = torch.tensor(ndt.wBin[:num_chis], device=device)
-            nBins = torch.tensor(ndt.nBins[:num_chis], device=device)
-            lookup_flat = ndt.lookupTable.flatten().to(device=device, dtype=torch.float32)
-
+            
+            # Skip residues with no chi angles (Gly, Ala)
+            if num_chis == 0:
+                continue
+            
             res_index = restype_3_to_index[resname.upper()]
-
             mask = res_type_idx == res_index
+            
             if not mask.any():
                 continue
 
+            # Select chi angles for this residue type
             chis_sel = chi_angles[mask, :num_chis]  # [n_res, num_chis]
 
-            scores = self._interpolate_rotamer_scores_differentiable(chis_sel, ndt, num_chis)
+            # Compute rotamer scores with proper interpolation and symmetry
+            scores = self._interpolate_rotamer_scores_differentiable(
+                chis_sel, ndt, num_chis, resname=resname
+            )
             
+            # Update chi_scores for matched residues
             if mask.any():
                 mask_indices = torch.nonzero(mask, as_tuple=False).squeeze(-1)
                 if mask_indices.numel() > 0:
+                    # Ensure scores is 1D
                     if scores.dim() == 0:  
                         scores = scores.unsqueeze(0)
                     elif scores.dim() > 1: 
                         scores = scores.flatten()
-                    chi_scores = chi_scores.scatter(0, mask_indices, scores)
+                    
+                    # Create new chi_scores with gradient tracking
+                    new_scores = chi_scores.clone()
+                    new_scores[mask_indices] = scores
+                    chi_scores = new_scores
 
+        # Calculate outlier penalties (only for evaluated residues, chi_scores >= 0)
+        # Use smooth penalty for gradient-based optimization
         rotamer_outliers = torch.where(
-            chi_scores >= 0, torch.nn.functional.leaky_relu(OUTLIER_THRESHOLD - chi_scores, negative_slope=0.01), torch.zeros_like(chi_scores)
+            chi_scores >= 0, 
+            torch.nn.functional.leaky_relu(OUTLIER_THRESHOLD - chi_scores, negative_slope=0.01), 
+            torch.zeros_like(chi_scores)
         )
+        
+        # Count outliers and favored rotamers
         n_outliers = torch.logical_and(chi_scores < OUTLIER_THRESHOLD, chi_scores >= 0).sum()
         n_favored = (chi_scores >= ALLOWED_THRESHOLD).sum()
         
-
         return {
             "rotamer_outliers": rotamer_outliers,
             "chi_scores": chi_scores,
