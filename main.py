@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--resolution", type=float, help="Resolution for density map operations", default=None)
 @click.option("--max_tokens", type=int, help="Maximum number of tokens for cropping (0 to disable)", default=512)
 @click.option("--gamma_0", type=float, help="Gamma 0 parameter", default=-0.5)
-@click.option("--recycles", type=int, help="Number of refinement recycles", default=3)
+@click.option("--recycles", type=int, help="Number of refinement recycles", default=300)
 @click.option("--enable_cropping", is_flag=True, help="Enable cropping for large structures", default=True)
 @click.option("--cond_early_stop", type=str, help="Condition early stop", default="loss")
 @click.option("--clash", type=float, help="Weight for clash loss", default=0.1)
@@ -58,7 +58,7 @@ def refine(
     target_density: Optional[str] = None,
     resolution: float = 1.9,
     max_tokens: int = 512,
-    recycles: int = 3,
+    recycles: int = 300,
     gamma_0: float = -0.5,
     enable_cropping: bool = True,
     cond_early_stop: str = "loss",
