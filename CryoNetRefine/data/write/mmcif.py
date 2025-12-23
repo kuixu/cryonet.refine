@@ -60,41 +60,45 @@ def to_mmcif(
         sequence = [str(res["name"]) for res in residues]
         sequences[entity] = sequence
 
-    # Create entity objects
-    lig_entity = None
-    entities_map = {}
+    # Group entities by (sequence, mol_type) to avoid duplicate Entity objects
+    # ihm/modelcif library treats entities with same sequence as duplicates
+    sequence_to_entity_obj = {}  # Maps (seq_tuple, mol_type) -> Entity object
+    entities_map = {}  # Maps chain_idx -> Entity object
+
     for entity, sequence in sequences.items():
         mol_type = entity_to_moltype[entity]
+        seq_tuple = tuple(sequence)
+        cache_key = (seq_tuple, mol_type)
 
-        if mol_type == const.chain_type_ids["PROTEIN"]:
-            alphabet = ihm.LPeptideAlphabet()
-            chem_comp = lambda x: ihm.LPeptideChemComp(id=x, code=x, code_canonical="X")  # noqa: E731
-        elif mol_type == const.chain_type_ids["DNA"]:
-            alphabet = ihm.DNAAlphabet()
-            chem_comp = lambda x: ihm.DNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
-        elif mol_type == const.chain_type_ids["RNA"]:
-            alphabet = ihm.RNAAlphabet()
-            chem_comp = lambda x: ihm.RNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
-        elif len(sequence) > 1:
-            alphabet = {}
-            chem_comp = lambda x: ihm.SaccharideChemComp(id=x)  # noqa: E731
+        if cache_key in sequence_to_entity_obj:
+            # Reuse existing Entity object for same sequence
+            model_e = sequence_to_entity_obj[cache_key]
         else:
-            alphabet = {}
-            chem_comp = lambda x: ihm.NonPolymerChemComp(id=x)  # noqa: E731
+            # Create new Entity object
+            if mol_type == const.chain_type_ids["PROTEIN"]:
+                alphabet = ihm.LPeptideAlphabet()
+                chem_comp = lambda x: ihm.LPeptideChemComp(id=x, code=x, code_canonical="X")  # noqa: E731
+            elif mol_type == const.chain_type_ids["DNA"]:
+                alphabet = ihm.DNAAlphabet()
+                chem_comp = lambda x: ihm.DNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
+            elif mol_type == const.chain_type_ids["RNA"]:
+                alphabet = ihm.RNAAlphabet()
+                chem_comp = lambda x: ihm.RNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
+            elif len(sequence) > 1:
+                alphabet = {}
+                chem_comp = lambda x: ihm.SaccharideChemComp(id=x)  # noqa: E731
+            else:
+                alphabet = {}
+                chem_comp = lambda x: ihm.NonPolymerChemComp(id=x)  # noqa: E731
 
-        # Handle smiles
-        if len(sequence) == 1 and (sequence[0] == "LIG"):
-            if lig_entity is None:
-                seq = [chem_comp(sequence[0])]
-                lig_entity = Entity(seq)
-            model_e = lig_entity
-        else:
             seq = [
                 alphabet[item] if item in alphabet else chem_comp(item)
                 for item in sequence
             ]
             model_e = Entity(seq)
+            sequence_to_entity_obj[cache_key] = model_e
 
+        # Map all chains of this entity to the Entity object
         for chain in entity_to_chains[entity]:
             chain_idx = chain["asym_id"]
             entities_map[chain_idx] = model_e

@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
-@click.option("--out_suffix", type=str, help="Output suffix", default="CryoNet.Refine")
+@click.option("--out_suffix", type=str, help="Output suffix", default="refine")
 @click.option("--out_dir", type=click.Path(exists=False), help="Output directory", default="./refine_results")
 @click.option("--cache", type=click.Path(exists=False), help="Cache directory")
 @click.option("--checkpoint", type=click.Path(exists=True), help="Model checkpoint", default=None)
@@ -34,11 +34,17 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--resolution", type=float, help="Resolution for density map operations", default=None)
 @click.option("--max_tokens", type=int, help="Maximum number of tokens for cropping (0 to disable)", default=512)
 @click.option("--gamma_0", type=float, help="Gamma 0 parameter", default=-0.5)
-@click.option("--recycles", type=int, help="Number of refinement recycles", default=3)
+@click.option("--recycles", type=int, help="Number of refinement recycles", default=300)
 @click.option("--enable_cropping", is_flag=True, help="Enable cropping for large structures", default=True)
 @click.option("--cond_early_stop", type=str, help="Condition early stop", default="loss")
 @click.option("--clash", type=float, help="Weight for clash loss", default=0.1)
 @click.option("--den", type=float, help="Weight for density loss", default=20.0)
+@click.option("--rama", type=float, help="Weight for rama loss", default=500.0)
+@click.option("--rotamer", type=float, help="Weight for rotamer loss", default=500.0)
+@click.option("--bond", type=float, help="Weight for bond loss", default=50)
+@click.option("--angle", type=float, help="Weight for angle loss", default=1)
+@click.option("--cbeta", type=float, help="Weight for cbeta loss", default=1.0)
+@click.option("--ramaz", type=float, help="Weight for ramaz loss", default=1.00)
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
@@ -47,17 +53,23 @@ def refine(
     out_dir: str,
     cache: str,
     checkpoint: Optional[str] = None,
-    out_suffix: str = None,
+    out_suffix: str = "refine",
     seed: Optional[int] = 11,
     target_density: Optional[str] = None,
     resolution: float = 1.9,
     max_tokens: int = 512,
-    recycles: int = 3,
+    recycles: int = 300,
     gamma_0: float = -0.5,
     enable_cropping: bool = True,
     cond_early_stop: str = "loss",
     clash: int = 0.1,
     den: int = 20.0,
+    rama: int = 500.0,
+    rotamer: int = 500.0,
+    bond: int = 50,
+    angle: int = 1,
+    cbeta: int = 1.0,
+    ramaz: int = 1.00,
     learning_rate: float = 1.8e-4,
     max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
@@ -67,6 +79,7 @@ def refine(
     start_time = time.time()
     set_seed(seed)
     data = Path(data).expanduser()
+    data_stem = data.stem
     out_dir = Path(out_dir).expanduser()
     # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -74,14 +87,15 @@ def refine(
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
     process_inputs(
         data=data,
+        data_stem=data_stem,
         out_dir=out_dir,
         mol_dir=mol_dir,
         preprocessing_threads=1,
     )
     # Load manifest
-    manifest = Manifest.load(out_dir / "processed" / "manifest.json")
+    manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")
     # Load processed data !!
-    processed_dir = out_dir / "processed"
+    processed_dir = out_dir / f"processed_{data_stem}"
     processed = BoltzProcessedInput(
         manifest=manifest,
         template_dir=processed_dir / "templates" if (processed_dir / "templates").exists() else None,
@@ -120,6 +134,12 @@ def refine(
     refine_args.num_recycles = recycles
     refine_args.weight_dict["clash"] = clash
     refine_args.weight_dict["den"] = den
+    refine_args.weight_dict["rama"] = rama
+    refine_args.weight_dict["rotamer"] = rotamer
+    refine_args.weight_dict["bond"] = bond
+    refine_args.weight_dict["angle"] = angle
+    refine_args.weight_dict["cbeta"] = cbeta
+    refine_args.weight_dict["ramaz"] = ramaz
     refine_args.learning_rate = learning_rate
     pdb_id = data[0].name.split('.')[0]
     refiner = Engine(
