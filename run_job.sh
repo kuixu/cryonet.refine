@@ -50,6 +50,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --target_density $map \
     --resolution $res \
     --out_dir $d \
+    --out_suffix CryoNet.Refine \
     --checkpoint $checkpoint \
     --max_tokens $max_tokens \
  
