@@ -130,6 +130,7 @@ def refine(
     assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
     target_density_obj = DensityInfo(mrc_path=target_density, resolution=resolution)
     refine_args = RefineArgs()
+    refine_args.resolution = resolution
     refine_args.data_dir = data_dir
     refine_args.num_recycles = recycles
     refine_args.weight_dict["clash"] = clash
