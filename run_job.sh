@@ -7,6 +7,7 @@ d=/data1/jobs/$j
 name=$(cat $d/name.list)
 out_dir=$d/${name}
 map=${out_dir}.mrc
+stg=$d/status
 
 cif_filename=$(jq -r '.pdbfile | split("/")[-1]' $stg)
 cif=${out_dir}/${cif_filename}
@@ -15,7 +16,6 @@ cif=${out_dir}/${cif_filename}
 out=${out_dir}_CryoNet.Refine.cif
 log=${out_dir}.log
 # python cryofold.py -m $map -s $seq -t $tem 
-stg=$d/status
 
 res=$(jq '.resolution' $stg)
 echo "-m $map -s $cif -r $res"
