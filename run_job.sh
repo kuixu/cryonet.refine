@@ -1,25 +1,16 @@
 #!/bin/bash
 
 
-#!/bin/bash
-
-# ./cryofold  -m tests/8638/8638.mrc -s tests/8638/8638.fasta -t tests/8638/8638.cif
-# b=$2
-
-
-# if [ "$HOSTNAME" = "smtl01"  ]; then
-#     d=/share01/hpc/zhangxiaoxing/data/f5/jobs_${b}_templ
-# else
-#     d=/data3/xukui/jobs/f5/jobs_${b}_templ
-
-# fi
 j=$1
 
 d=/data1/jobs/$j
 name=$(cat $d/name.list)
 out_dir=$d/${name}
 map=${out_dir}.mrc
-cif=${out_dir}.cif
+
+cif_filename=$(jq -r '.pdbfile | split("/")[-1]' $stg)
+cif=${out_dir}/${cif_filename}
+
 # tem=${out_dir}_aem0.pdb
 out=${out_dir}_CryoNet.Refine.cif
 log=${out_dir}.log
