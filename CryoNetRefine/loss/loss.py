@@ -64,66 +64,6 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, resolution=
 
 
 
-# def probe_style_clash_loss(
-#     predicted_coords: torch.Tensor,
-#     feats: dict,
-#     clash_cutoff: float = -0.4,  
-#     softness: float = 10.0,       
-#     exclude_neighbor_distance: int = 1,  
-#     eps: float = 1e-6,
-# ):
-
-#     device = predicted_coords.device
-#     B, N, _ = predicted_coords.shape
-
-#     atom_mask = feats["atom_pad_mask"].bool()               # [B, N]
-#     coords = predicted_coords                               # [B, N, 3]
-
-#     ref_element = feats["ref_element"].float().to(device)   # [B, N, E]
-
-#     vdw_radii_table = torch.zeros(
-#         const.num_elements, dtype=torch.float32, device=device
-#     )
-#     vdw_radii_table[1:1 + len(const.vdw_radii)] = torch.tensor(
-#         const.vdw_radii, dtype=torch.float32, device=device
-#     )
-#     # [B, N, E] @ [E] -> [B, N]
-#     atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)
-
-#     # coords: [B, N, 3]
-#     diffs = coords.unsqueeze(2) - coords.unsqueeze(1)       # [B, N, N, 3]
-#     dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [B, N, N]
-#     r_i = atom_vdw_radii.unsqueeze(2)                        # [B, N, 1]
-#     r_j = atom_vdw_radii.unsqueeze(1)                        # [B, 1, N]
-#     r_sum = r_i + r_j                                        # [B, N, N]
-
-#     gap = dists - r_sum  
-
-#     pair_mask = atom_mask.unsqueeze(2) & atom_mask.unsqueeze(1)  # [B, N, N]
-#     eye = torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)  # [1, N, N]
-#     pair_mask = pair_mask & (~eye)
-
-#     if "atom_to_token" in feats and "residue_index" in feats:
-#         atom_to_token = feats["atom_to_token"].float().to(device)        # [B, N, L]
-#         residue_index = feats["residue_index"].float().to(device)        # [B, L]
-#         atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [B, N]
-#         res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [B, N, N]
-#         neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
-#         pair_mask = pair_mask & (~neighbor_mask.bool())
-
-
-#     x = gap - clash_cutoff
-#     clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [B, N, N]
-
-#     triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
-#     clash_prob = clash_prob * triu_mask.unsqueeze(0)
-
-#     soft_n_clashes = clash_prob.sum(dim=(1, 2))  # [B]
-#     n_atoms = atom_mask.sum(dim=1).clamp(min=1).float()  # [B]
-#     clashscore = soft_n_clashes * 1000.0 / n_atoms       # [B]
-
-#     return clashscore, soft_n_clashes
-
 def probe_style_clash_loss(
     predicted_coords: torch.Tensor,
     feats: dict,
@@ -131,9 +71,8 @@ def probe_style_clash_loss(
     softness: float = 10.0,       
     exclude_neighbor_distance: int = 1,  
     eps: float = 1e-6,
-    chunk_size: int = 1000,  # 🚀 分批处理大小，可根据显存调整
+    chunk_size: int = 1000,  # Chunk size for batch processing, can be adjusted based on GPU memory
 ):
-
     device = predicted_coords.device
     B, N, _ = predicted_coords.shape
     assert B == 1, "Expected batch size = 1"
@@ -143,6 +82,7 @@ def probe_style_clash_loss(
 
     ref_element = feats["ref_element"].float().to(device)   # [1, N, E]
 
+    # Construct vdw radii tensor according to the reference element one-hot encoding
     vdw_radii_table = torch.zeros(
         const.num_elements, dtype=torch.float32, device=device
     )
@@ -151,52 +91,52 @@ def probe_style_clash_loss(
     )
     atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)  # [1, N]
 
-    # 🚀 如果 N 太大，分批计算 N×N 矩阵
+    # If N is large, process pairwise distances in chunks to save memory
     if N > chunk_size:
-        # 分批计算，避免一次性创建 [1, N, N] 矩阵
+        # Batch computation to avoid allocating a [1, N, N] matrix in memory at once
         soft_n_clashes = torch.tensor(0.0, device=device, requires_grad=True)
         
-        # 计算 neighbor_mask（如果需要）
+        # Precompute atom-to-residue indices for neighbor masking if available
         neighbor_mask_full = None
         if "atom_to_token" in feats and "residue_index" in feats:
             atom_to_token = feats["atom_to_token"].float().to(device)        # [1, N, L]
             residue_index = feats["residue_index"].float().to(device)        # [1, L]
             atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [1, N]
         
-        # 分批处理：只计算上三角矩阵（因为是对称的）
+        # Process the upper triangle (since pair clashes are symmetric)
         for i in range(0, N, chunk_size):
             end_i = min(i + chunk_size, N)
-            coords_i = coords[:, i:end_i, :]  # [1, chunk_i, 3]
-            atom_mask_i = atom_mask[:, i:end_i]  # [1, chunk_i]
+            coords_i = coords[:, i:end_i, :]       # [1, chunk_i, 3]
+            atom_mask_i = atom_mask[:, i:end_i]    # [1, chunk_i]
             atom_vdw_i = atom_vdw_radii[:, i:end_i]  # [1, chunk_i]
             
-            # 只计算 j >= i 的部分（上三角）
             for j in range(i, N, chunk_size):
                 end_j = min(j + chunk_size, N)
-                coords_j = coords[:, j:end_j, :]  # [1, chunk_j, 3]
-                atom_mask_j = atom_mask[:, j:end_j]  # [1, chunk_j]
+                coords_j = coords[:, j:end_j, :]       # [1, chunk_j, 3]
+                atom_mask_j = atom_mask[:, j:end_j]    # [1, chunk_j]
                 atom_vdw_j = atom_vdw_radii[:, j:end_j]  # [1, chunk_j]
                 
-                # 计算子矩阵的距离
+                # Compute pairwise distances for this chunk
                 diffs = coords_i.unsqueeze(2) - coords_j.unsqueeze(1)  # [1, chunk_i, chunk_j, 3]
                 dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, chunk_i, chunk_j]
                 del diffs
-                
+
                 r_i = atom_vdw_i.unsqueeze(2)  # [1, chunk_i, 1]
                 r_j = atom_vdw_j.unsqueeze(1)  # [1, 1, chunk_j]
                 r_sum = r_i + r_j
                 gap_ij = dists - r_sum  # [1, chunk_i, chunk_j]
                 del dists, r_i, r_j, r_sum
-                
-                # 计算 pair_mask
+
+                # Create mask to exclude invalid/absent atoms
                 pair_mask_ij = atom_mask_i.unsqueeze(2) & atom_mask_j.unsqueeze(1)  # [1, chunk_i, chunk_j]
+
                 if i == j:
-                    # 对角线块，需要排除对角线
+                    # Remove self-pairs (diagonal block)
                     eye = torch.eye(end_i - i, dtype=torch.bool, device=device).unsqueeze(0)
                     pair_mask_ij = pair_mask_ij & (~eye)
                     del eye
-                
-                # 计算 neighbor_mask（如果需要）
+
+                # If available, exclude atom pairs from neighboring residues (e.g., bonded atoms)
                 if "atom_to_token" in feats and "residue_index" in feats:
                     atom_res_i = atom_res_idx[:, i:end_i]  # [1, chunk_i]
                     atom_res_j = atom_res_idx[:, j:end_j]  # [1, chunk_j]
@@ -204,33 +144,32 @@ def probe_style_clash_loss(
                     neighbor_mask_ij = torch.abs(res_diff) <= float(exclude_neighbor_distance)
                     pair_mask_ij = pair_mask_ij & (~neighbor_mask_ij.bool())
                     del res_diff, neighbor_mask_ij
-                
-                # 计算 clash_prob 并累加
+
+                # Compute clash probability for each pair in this chunk
                 x_ij = gap_ij - clash_cutoff
                 clash_prob_ij = torch.sigmoid(-softness * x_ij) * pair_mask_ij.float()  # [1, chunk_i, chunk_j]
-                
-                # 只累加上三角部分
+
+                # Only keep the upper triangle for intra-chunk comparisons
                 if i == j:
-                    # 对角线块，只取上三角
                     triu_mask_ij = torch.triu(torch.ones(end_i - i, end_j - j, dtype=torch.bool, device=device), diagonal=1)
                     clash_prob_ij = clash_prob_ij * triu_mask_ij.unsqueeze(0)
                     del triu_mask_ij
-                # 如果 i < j，整个块都是上三角的一部分
-                
-                # 累加
+                # For i < j blocks, the whole block is in the upper triangle
+
+                # Accumulate total number of (soft) clashes in the structure
                 soft_n_clashes = soft_n_clashes + clash_prob_ij.sum()
                 del gap_ij, pair_mask_ij, clash_prob_ij, x_ij
-                
+
                 if device.type == 'cuda':
                     torch.cuda.empty_cache()
         
-        n_atoms = atom_mask.sum().clamp(min=1).float()
-        clashscore = soft_n_clashes * 1000.0 / n_atoms
+        n_atoms = atom_mask.sum().clamp(min=1).float()  # Total number of valid atoms
+        clashscore = soft_n_clashes * 1000.0 / n_atoms  # Clashscore normalized per 1000 atoms
         soft_n_clashes_final = soft_n_clashes
         
     else:
-        # 原始方法（N 不太大时）
-        diffs = coords.unsqueeze(2) - coords.unsqueeze(1)       # [1, N, N, 3]
+        # Standard computation for moderate N (single chunk, full matrix)
+        diffs = coords.unsqueeze(2) - coords.unsqueeze(1)   # [1, N, N, 3]
         dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, N, N]
         del diffs
         if device.type == 'cuda':
@@ -252,6 +191,7 @@ def probe_style_clash_loss(
         if device.type == 'cuda':
             torch.cuda.empty_cache()
 
+        # Exclude neighbor atoms if possible
         if "atom_to_token" in feats and "residue_index" in feats:
             atom_to_token = feats["atom_to_token"].float().to(device)        # [1, N, L]
             residue_index = feats["residue_index"].float().to(device)        # [1, L]
@@ -266,9 +206,11 @@ def probe_style_clash_loss(
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
 
+        # Compute clash probabilities
         x = gap - clash_cutoff
         clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [1, N, N]
 
+        # Only sum the upper triangle (to avoid double-counting)
         triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
         clash_prob = clash_prob * triu_mask.unsqueeze(0)
         del triu_mask, gap, pair_mask
