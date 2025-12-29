@@ -64,6 +64,66 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, resolution=
 
 
 
+# def probe_style_clash_loss(
+#     predicted_coords: torch.Tensor,
+#     feats: dict,
+#     clash_cutoff: float = -0.4,  
+#     softness: float = 10.0,       
+#     exclude_neighbor_distance: int = 1,  
+#     eps: float = 1e-6,
+# ):
+
+#     device = predicted_coords.device
+#     B, N, _ = predicted_coords.shape
+
+#     atom_mask = feats["atom_pad_mask"].bool()               # [B, N]
+#     coords = predicted_coords                               # [B, N, 3]
+
+#     ref_element = feats["ref_element"].float().to(device)   # [B, N, E]
+
+#     vdw_radii_table = torch.zeros(
+#         const.num_elements, dtype=torch.float32, device=device
+#     )
+#     vdw_radii_table[1:1 + len(const.vdw_radii)] = torch.tensor(
+#         const.vdw_radii, dtype=torch.float32, device=device
+#     )
+#     # [B, N, E] @ [E] -> [B, N]
+#     atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)
+
+#     # coords: [B, N, 3]
+#     diffs = coords.unsqueeze(2) - coords.unsqueeze(1)       # [B, N, N, 3]
+#     dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [B, N, N]
+#     r_i = atom_vdw_radii.unsqueeze(2)                        # [B, N, 1]
+#     r_j = atom_vdw_radii.unsqueeze(1)                        # [B, 1, N]
+#     r_sum = r_i + r_j                                        # [B, N, N]
+
+#     gap = dists - r_sum  
+
+#     pair_mask = atom_mask.unsqueeze(2) & atom_mask.unsqueeze(1)  # [B, N, N]
+#     eye = torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)  # [1, N, N]
+#     pair_mask = pair_mask & (~eye)
+
+#     if "atom_to_token" in feats and "residue_index" in feats:
+#         atom_to_token = feats["atom_to_token"].float().to(device)        # [B, N, L]
+#         residue_index = feats["residue_index"].float().to(device)        # [B, L]
+#         atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [B, N]
+#         res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [B, N, N]
+#         neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+#         pair_mask = pair_mask & (~neighbor_mask.bool())
+
+
+#     x = gap - clash_cutoff
+#     clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [B, N, N]
+
+#     triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
+#     clash_prob = clash_prob * triu_mask.unsqueeze(0)
+
+#     soft_n_clashes = clash_prob.sum(dim=(1, 2))  # [B]
+#     n_atoms = atom_mask.sum(dim=1).clamp(min=1).float()  # [B]
+#     clashscore = soft_n_clashes * 1000.0 / n_atoms       # [B]
+
+#     return clashscore, soft_n_clashes
+
 def probe_style_clash_loss(
     predicted_coords: torch.Tensor,
     feats: dict,
@@ -71,15 +131,17 @@ def probe_style_clash_loss(
     softness: float = 10.0,       
     exclude_neighbor_distance: int = 1,  
     eps: float = 1e-6,
+    chunk_size: int = 1000,  # 🚀 分批处理大小，可根据显存调整
 ):
 
     device = predicted_coords.device
     B, N, _ = predicted_coords.shape
+    assert B == 1, "Expected batch size = 1"
 
-    atom_mask = feats["atom_pad_mask"].bool()               # [B, N]
-    coords = predicted_coords                               # [B, N, 3]
+    atom_mask = feats["atom_pad_mask"].bool()               # [1, N]
+    coords = predicted_coords                               # [1, N, 3]
 
-    ref_element = feats["ref_element"].float().to(device)   # [B, N, E]
+    ref_element = feats["ref_element"].float().to(device)   # [1, N, E]
 
     vdw_radii_table = torch.zeros(
         const.num_elements, dtype=torch.float32, device=device
@@ -87,47 +149,140 @@ def probe_style_clash_loss(
     vdw_radii_table[1:1 + len(const.vdw_radii)] = torch.tensor(
         const.vdw_radii, dtype=torch.float32, device=device
     )
-    # [B, N, E] @ [E] -> [B, N]
-    atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)
+    atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)  # [1, N]
 
-    # coords: [B, N, 3]
-    diffs = coords.unsqueeze(2) - coords.unsqueeze(1)       # [B, N, N, 3]
-    dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [B, N, N]
-    r_i = atom_vdw_radii.unsqueeze(2)                        # [B, N, 1]
-    r_j = atom_vdw_radii.unsqueeze(1)                        # [B, 1, N]
-    r_sum = r_i + r_j                                        # [B, N, N]
+    # 🚀 如果 N 太大，分批计算 N×N 矩阵
+    if N > chunk_size:
+        # 分批计算，避免一次性创建 [1, N, N] 矩阵
+        soft_n_clashes = torch.tensor(0.0, device=device, requires_grad=True)
+        
+        # 计算 neighbor_mask（如果需要）
+        neighbor_mask_full = None
+        if "atom_to_token" in feats and "residue_index" in feats:
+            atom_to_token = feats["atom_to_token"].float().to(device)        # [1, N, L]
+            residue_index = feats["residue_index"].float().to(device)        # [1, L]
+            atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [1, N]
+        
+        # 分批处理：只计算上三角矩阵（因为是对称的）
+        for i in range(0, N, chunk_size):
+            end_i = min(i + chunk_size, N)
+            coords_i = coords[:, i:end_i, :]  # [1, chunk_i, 3]
+            atom_mask_i = atom_mask[:, i:end_i]  # [1, chunk_i]
+            atom_vdw_i = atom_vdw_radii[:, i:end_i]  # [1, chunk_i]
+            
+            # 只计算 j >= i 的部分（上三角）
+            for j in range(i, N, chunk_size):
+                end_j = min(j + chunk_size, N)
+                coords_j = coords[:, j:end_j, :]  # [1, chunk_j, 3]
+                atom_mask_j = atom_mask[:, j:end_j]  # [1, chunk_j]
+                atom_vdw_j = atom_vdw_radii[:, j:end_j]  # [1, chunk_j]
+                
+                # 计算子矩阵的距离
+                diffs = coords_i.unsqueeze(2) - coords_j.unsqueeze(1)  # [1, chunk_i, chunk_j, 3]
+                dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, chunk_i, chunk_j]
+                del diffs
+                
+                r_i = atom_vdw_i.unsqueeze(2)  # [1, chunk_i, 1]
+                r_j = atom_vdw_j.unsqueeze(1)  # [1, 1, chunk_j]
+                r_sum = r_i + r_j
+                gap_ij = dists - r_sum  # [1, chunk_i, chunk_j]
+                del dists, r_i, r_j, r_sum
+                
+                # 计算 pair_mask
+                pair_mask_ij = atom_mask_i.unsqueeze(2) & atom_mask_j.unsqueeze(1)  # [1, chunk_i, chunk_j]
+                if i == j:
+                    # 对角线块，需要排除对角线
+                    eye = torch.eye(end_i - i, dtype=torch.bool, device=device).unsqueeze(0)
+                    pair_mask_ij = pair_mask_ij & (~eye)
+                    del eye
+                
+                # 计算 neighbor_mask（如果需要）
+                if "atom_to_token" in feats and "residue_index" in feats:
+                    atom_res_i = atom_res_idx[:, i:end_i]  # [1, chunk_i]
+                    atom_res_j = atom_res_idx[:, j:end_j]  # [1, chunk_j]
+                    res_diff = atom_res_i.unsqueeze(2) - atom_res_j.unsqueeze(1)  # [1, chunk_i, chunk_j]
+                    neighbor_mask_ij = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+                    pair_mask_ij = pair_mask_ij & (~neighbor_mask_ij.bool())
+                    del res_diff, neighbor_mask_ij
+                
+                # 计算 clash_prob 并累加
+                x_ij = gap_ij - clash_cutoff
+                clash_prob_ij = torch.sigmoid(-softness * x_ij) * pair_mask_ij.float()  # [1, chunk_i, chunk_j]
+                
+                # 只累加上三角部分
+                if i == j:
+                    # 对角线块，只取上三角
+                    triu_mask_ij = torch.triu(torch.ones(end_i - i, end_j - j, dtype=torch.bool, device=device), diagonal=1)
+                    clash_prob_ij = clash_prob_ij * triu_mask_ij.unsqueeze(0)
+                    del triu_mask_ij
+                # 如果 i < j，整个块都是上三角的一部分
+                
+                # 累加
+                soft_n_clashes = soft_n_clashes + clash_prob_ij.sum()
+                del gap_ij, pair_mask_ij, clash_prob_ij, x_ij
+                
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+        
+        n_atoms = atom_mask.sum().clamp(min=1).float()
+        clashscore = soft_n_clashes * 1000.0 / n_atoms
+        soft_n_clashes_final = soft_n_clashes
+        
+    else:
+        # 原始方法（N 不太大时）
+        diffs = coords.unsqueeze(2) - coords.unsqueeze(1)       # [1, N, N, 3]
+        dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, N, N]
+        del diffs
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        
+        r_i = atom_vdw_radii.unsqueeze(2)                        # [1, N, 1]
+        r_j = atom_vdw_radii.unsqueeze(1)                        # [1, 1, N]
+        r_sum = r_i + r_j                                        # [1, N, N]
 
-    gap = dists - r_sum  
+        gap = dists - r_sum  
+        del dists, r_i, r_j, r_sum
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
-    pair_mask = atom_mask.unsqueeze(2) & atom_mask.unsqueeze(1)  # [B, N, N]
-    eye = torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)  # [1, N, N]
-    pair_mask = pair_mask & (~eye)
+        pair_mask = atom_mask.unsqueeze(2) & atom_mask.unsqueeze(1)  # [1, N, N]
+        eye = torch.eye(N, dtype=torch.bool, device=device).unsqueeze(0)  # [1, N, N]
+        pair_mask = pair_mask & (~eye)
+        del eye
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
 
-    if "atom_to_token" in feats and "residue_index" in feats:
-        atom_to_token = feats["atom_to_token"].float().to(device)        # [B, N, L]
-        residue_index = feats["residue_index"].float().to(device)        # [B, L]
-        atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [B, N]
-        res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [B, N, N]
-        neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
-        pair_mask = pair_mask & (~neighbor_mask.bool())
+        if "atom_to_token" in feats and "residue_index" in feats:
+            atom_to_token = feats["atom_to_token"].float().to(device)        # [1, N, L]
+            residue_index = feats["residue_index"].float().to(device)        # [1, L]
+            atom_res_idx = torch.bmm(atom_to_token, residue_index.unsqueeze(-1)).squeeze(-1)  # [1, N]
+            res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [1, N, N]
+            neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+            del res_diff
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            pair_mask = pair_mask & (~neighbor_mask.bool())
+            del neighbor_mask
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        x = gap - clash_cutoff
+        clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [1, N, N]
+
+        triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
+        clash_prob = clash_prob * triu_mask.unsqueeze(0)
+        del triu_mask, gap, pair_mask
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+        soft_n_clashes_final = clash_prob.sum(dim=(1, 2))  # [1]
+        n_atoms = atom_mask.sum(dim=1).clamp(min=1).float()  # [1]
+        clashscore = soft_n_clashes_final * 1000.0 / n_atoms       # [1]
+
+    return clashscore, soft_n_clashes_final
 
 
-    x = gap - clash_cutoff
-    clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [B, N, N]
-
-    triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
-    clash_prob = clash_prob * triu_mask.unsqueeze(0)
-
-    soft_n_clashes = clash_prob.sum(dim=(1, 2))  # [B]
-    n_atoms = atom_mask.sum(dim=1).clamp(min=1).float()  # [B]
-    clashscore = soft_n_clashes * 1000.0 / n_atoms       # [B]
-
-    return clashscore, soft_n_clashes
-
-
-
-
-def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_root=None, top8000_path=None, data_dir=None, geometric_adapter=None, geometric_wrapper=None, weights=None, is_nucleic_acid=False):
+def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_root=None, top8000_path=None, data_dir=None, geometric_adapter=None, geometric_wrapper=None, weights=None, is_nucleic_acid=False, final_global_refined_coords=None, global_feats=None, use_global_clash=False):
     """
     Compute geometric losses via simplified wrapper.
     Returns (loss_dict)
@@ -186,12 +341,20 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
 
     if weights.get("clash", 0.0) > 0.0:
         clash_start_time = time.time()
-        clashscore, _ = probe_style_clash_loss(
-            predicted_coords,  # [B, N, 3]
-            feats,
-            clash_cutoff=-0.4,
-            softness=10.0,
-        )
+        if use_global_clash:
+            clashscore, _ = probe_style_clash_loss(
+                final_global_refined_coords,  # [B, N, 3]
+                global_feats,
+                clash_cutoff=-0.4,
+                softness=10.0,
+            )
+        else:
+            clashscore, _ = probe_style_clash_loss(
+                predicted_coords,  # [B, N, 3]
+                feats,
+                clash_cutoff=-0.4,
+                softness=10.0,
+            )
         loss_dict["clash"] = clashscore.mean()
         time_loss_dict["clash"] = time.time() - clash_start_time
         
@@ -207,7 +370,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
 
 
 
-def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None):
+def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None, final_global_refined_coords=None, global_feats=None):
     device = predicted_coords.device
     weights = args.weight_dict
 
@@ -259,7 +422,10 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
             geometric_adapter=geometric_adapter,
             geometric_wrapper=geometric_wrapper,
             weights=weights,
-            is_nucleic_acid=is_nucleic_acid
+            is_nucleic_acid=is_nucleic_acid,
+            final_global_refined_coords=final_global_refined_coords,
+            global_feats=global_feats,
+            use_global_clash=args.use_global_clash
         )
         # Expose each component with weights
         for name, value in geo_losses.items():

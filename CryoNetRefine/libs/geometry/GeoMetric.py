@@ -554,9 +554,17 @@ class GeoMetric:
         script_path = os.path.abspath(__file__)
         script_dir = os.path.dirname(script_path)
         get_phenix_ss_script = os.path.join(script_dir, "compute_ss.py")
+        # Find project root (cryonet.refine directory) by going up from current file
+        # GeoMetric.py is at: cryonet.refine/CryoNetRefine/libs/geometry/GeoMetric.py
+        # Project root is 3 levels up
+        project_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
         # absolute path !
         pickle_path = os.path.splitext(output_path)[0] + ".pickle"
-        cmd = f"{sys.executable} -m CryoNetRefine.libs.geometry.compute_ss {output_path} {pickle_path}"
+        # Run script directly with PYTHONPATH set to project root
+        # Use absolute paths and ensure PYTHONPATH is set correctly
+        env_pythonpath = os.environ.get('PYTHONPATH', '')
+        pythonpath = f"{project_root}:{env_pythonpath}" if env_pythonpath else project_root
+        cmd = f"cd {project_root} && PYTHONPATH={pythonpath} {sys.executable} {get_phenix_ss_script} {output_path} {pickle_path}"
         os.system(cmd)
         ss_types_res = torch.load(pickle_path, map_location=self.phi_psi.device, weights_only=True)
         os.system(f"rm {pickle_path}")
@@ -685,10 +693,22 @@ class GeoMetric:
 
             xx = phi
             yy = psi
-            v1 = table[i][j]
-            v2 = table[i + 1][j + 1]
-            v3 = table[i][j + 1]
-            v4 = table[i + 1][j]
+            # Get table dimensions to prevent index out of bounds
+            table_nrows = len(table)
+            table_ncols = len(table[0]) if table_nrows > 0 else 0
+            
+            # Clamp indices to valid range to prevent out-of-bounds access
+            # When i = -1 (phi < -178), map to 0; when i is at max, clamp to max-2
+            # This ensures i+1 is always within bounds
+            i_safe = max(0, min(i, table_nrows - 2))  # Clamp to max-2 so i+1 is valid
+            j_safe = max(0, min(j, table_ncols - 2))   # Clamp to max-2 so j+1 is valid
+            i1_safe = i_safe + 1
+            j1_safe = j_safe + 1
+            
+            v1 = table[i_safe][j_safe]
+            v2 = table[i1_safe][j1_safe]
+            v3 = table[i_safe][j1_safe]
+            v4 = table[i1_safe][j_safe]
             zsc=interpolate_2d(x1, y1, x2, y2, v1, v2, v3, v4, phi_psi)
             ss_idx=ss2idx[ss]
             res_idx=rama_res2idx[resname]
@@ -1048,13 +1068,16 @@ class GeoMetric:
 
                 # Convert to tensor (keep on CPU to save GPU memory, move to GPU when using)
                 perm_tensor_cpu = torch.tensor(perm_indices, dtype=torch.long, device='cpu')
-                
-                # 🚀 Cache grm, sites_cart, perm_tensor
+                energies_sites = grm.energies_sites(
+                    sites_cart=sites_cart,
+                    compute_gradients=False
+                )
+                # 🚀 Cache grm, sites_cart, perm_tensor, energies_sites 
                 self._rmsd_grm_cache = grm
                 self._rmsd_sites_cart_cache = sites_cart
                 self._rmsd_perm_tensor_cache = perm_tensor_cpu
                 self._rmsd_cache_key = cache_key
-                
+                self._energies_sites = energies_sites
                 # print(f"💾 Cached GRM and atom mapping (key: {cache_key})")
                 
             except Exception as e:
@@ -1071,6 +1094,7 @@ class GeoMetric:
             grm = self._rmsd_grm_cache
             sites_cart = self._rmsd_sites_cart_cache
             perm_tensor_cpu = self._rmsd_perm_tensor_cache
+            energies_sites = self._energies_sites
             # print(f"🚀 Using cached GRM and atom mapping (key: {cache_key})")
         # Move perm_tensor to target device
         perm_tensor = perm_tensor_cpu.to(pred_coords_unpad_tensor.device)
@@ -1079,10 +1103,6 @@ class GeoMetric:
         # Upgrade precision to float64 to reduce numerical errors
         pred_coords_aligned_f64 = pred_coords_aligned.to(dtype=torch.float64)
         # Get energies_sites object (use mmtbx sites_cart to create proxies)
-        energies_sites = grm.energies_sites(
-            sites_cart=sites_cart,
-            compute_gradients=True
-        )
         # bond_deviations = energies_sites.bond_deviations()
         # angle_deviations = energies_sites.angle_deviations()
         # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
