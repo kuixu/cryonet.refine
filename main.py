@@ -5,6 +5,20 @@ CryoNet.Refine Refinement
 This script performs structure refinement using density-guided diffusion.
 It freezes all modules except the diffusion module and uses CC loss for optimization.
 """
+import os
+import sys
+# Set PYTHONPATH to include project root if not already set
+# This ensures CryoNetRefine package can be found when running compute_ss.py
+if __name__ == "__main__":
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    # Also set environment variable for subprocess calls
+    if 'PYTHONPATH' not in os.environ:
+        os.environ['PYTHONPATH'] = project_root
+    elif project_root not in os.environ['PYTHONPATH']:
+        os.environ['PYTHONPATH'] = f"{project_root}:{os.environ['PYTHONPATH']}"
+
 import click,time, warnings
 from tqdm import tqdm
 from pathlib import Path
@@ -48,6 +62,7 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
+@click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=False)
 def refine(
     data: str,
     out_dir: str,
@@ -73,6 +88,7 @@ def refine(
     learning_rate: float = 1.8e-4,
     max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
+    use_global_clash: bool = False,
 
 ) -> None:
     """Run structure refinement with Boltz.""" 
@@ -127,8 +143,13 @@ def refine(
     else:
         model_module = model_module.to(device)
     # Load target density map if provided
-    assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
-    target_density_obj = DensityInfo(mrc_path=target_density, resolution=resolution)
+    if den == 0.0:
+        target_density = None
+        target_density_obj = None
+        resolution = None
+    else:
+        target_density_obj = DensityInfo(mrc_path=target_density, resolution=resolution)
+        assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
     refine_args = RefineArgs()
     refine_args.resolution = resolution
     refine_args.data_dir = data_dir
@@ -142,6 +163,7 @@ def refine(
     refine_args.weight_dict["cbeta"] = cbeta
     refine_args.weight_dict["ramaz"] = ramaz
     refine_args.learning_rate = learning_rate
+    refine_args.use_global_clash = use_global_clash
     pdb_id = data[0].name.split('.')[0]
     refiner = Engine(
         model_module, 

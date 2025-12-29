@@ -58,6 +58,8 @@ class Engine:
         self.max_tokens = max_tokens
         self.enable_cropping = enable_cropping
         self.pdb_id = pdb_id
+        self.final_global_refined_coords = None
+        self.global_feats = None
         # Initialize cropper if needed
         if self.enable_cropping:
             if self.refine_args.use_molecule_aware_cropping:
@@ -179,22 +181,28 @@ class Engine:
         # Keep the aggregated refined_coords on CPU to save GPU memory;
         # only the current crop will live on GPU.
         refined_coords = torch.zeros_like(batch["template_coords"].squeeze(0))
+
+        self.final_global_refined_coords = batch["template_coords"].squeeze(0).clone().to(self.device)  # [1, N, 3]
+
         loss_dict_list = []
         time_loss_dict_list = []
         
+        # GPU mem
         for crop_idx, crop_info in enumerate(all_crops):
             _, crop_token_indices, molecule_type, crop_metadata = crop_info
             print(f"  Processing crop {crop_idx + 1}/{num_crops}: {molecule_type} "
                   f"({crop_metadata['num_tokens']} tokens)")
-            
-            # Extract crop from batch
+            if torch.cuda.is_available():
+                mem_allocated = torch.cuda.memory_allocated(self.device) / 1024 / 1024 / 1024  # GB
+                mem_reserved = torch.cuda.memory_reserved(self.device) / 1024 / 1024 / 1024  # GB
+                print(f"    GPU memory: allocated={mem_allocated:.2f} GB, reserved={mem_reserved:.2f} GB")
             crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
                 batch, crop_info
             )
             
             # Run refinement step on crop
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
-                crop_batch, target_density, iteration, data_dir, out_dir, crop_idx
+                crop_batch, target_density, iteration, data_dir, out_dir, crop_idx, crop_atom_mask
             )
             
             # Update refined_coords
@@ -206,13 +214,8 @@ class Engine:
             
             # Accumulate loss (average across crops)
             total_loss += crop_loss / num_crops
-            
             # Backward pass
             (crop_loss / num_crops).backward(retain_graph=False)
-            
-            # Update weights after each crop
-            self.optimizer.step()
-            self.optimizer.zero_grad()
             
             # Clean up
             del crop_loss, crop_predicted_coords, crop_batch, crop_token_indices, crop_atom_mask
@@ -222,12 +225,15 @@ class Engine:
             loss_dict_list.append(loss_dict)
             time_loss_dict_list.append(time_loss_dict)
         
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        self.model.zero_grad()
         # Garbage collection
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if out_dir:
-            output_path = out_dir / "refined_predictions" / f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
+            output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
             write_refined_structure(batch, refined_coords, data_dir, output_path)
         
         return {
@@ -372,7 +378,7 @@ class Engine:
             return self.crop_atom_types_cache[cache_key]['atom_radius_weights']
         return None
 
-    def refine_step_single_crop(self, crop_batch, target_density=None, iteration=0, data_dir=None, out_dir=None, crop_idx=0):
+    def refine_step_single_crop(self, crop_batch, target_density=None, iteration=0, data_dir=None, out_dir=None, crop_idx=0, crop_atom_mask=None):
         """Perform refinement on a single crop."""
         start_time = time.time()
         # Move only this crop's tensors to the target device.
@@ -432,10 +438,11 @@ class Engine:
         
         if hasattr(self, 'crop_feature_cache') and cache_key in self.crop_feature_cache and iteration > 0:
             cached_features = self.crop_feature_cache[cache_key]
-            s = cached_features['s']
-            z = cached_features['z']
-            diffusion_conditioning = cached_features['diffusion_conditioning']
-            s_inputs = cached_features['s_inputs']
+            s = cached_features['s'].to(self.device)
+            z = cached_features['z'].to(self.device)
+            diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                    for k, v in cached_features['diffusion_conditioning'].items()}
+            s_inputs = cached_features['s_inputs'].to(self.device)
         else:
 
             with torch.no_grad():
@@ -494,12 +501,12 @@ class Engine:
                     self.crop_feature_cache = {}
                 
                 self.crop_feature_cache[cache_key] = {
-                    's': s.detach(),
-                    'z': z.detach(),
-                    'diffusion_conditioning': {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in diffusion_conditioning.items()},
-                    's_inputs': s_inputs.detach()
+                    's': s.detach().cpu(),  # 🚀 移到CPU以节省GPU显存
+                    'z': z.detach().cpu(),
+                    'diffusion_conditioning': {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v 
+                                             for k, v in diffusion_conditioning.items()},
+                    's_inputs': s_inputs.detach().cpu()
                 }
-        
         
         self.model.train()  # Set to training mode for diffusion
 
@@ -520,10 +527,26 @@ class Engine:
                 iteration=iteration,
                 atom_weights=atom_radius_weights
             )
-        
-
+        del s, z, s_inputs, diffusion_conditioning
         predicted_coords = struct_out["sample_atom_coords"]
  
+        # update final global refined coords
+        crop_predicted_coords_global = predicted_coords[crop_batch['atom_pad_mask']]  # [N_crop_atoms, 3]
+        crop_atom_mask_device = crop_atom_mask.to(self.device)  # [N_atoms]
+        crop_atom_indices = torch.where(crop_atom_mask_device)[0]  # [N_crop_atoms] - indices in global tensor
+        if crop_idx > 0:
+            # detach previous global refined coords to avoid conflict with current crop
+            self.final_global_refined_coords = self.final_global_refined_coords.detach().requires_grad_(True)
+        index_tensor = crop_atom_indices.unsqueeze(0).unsqueeze(-1).expand(1, -1, 3)  # [1, N_crop_atoms, 3]
+        src_tensor = crop_predicted_coords_global.unsqueeze(0)  # [1, N_crop_atoms, 3]
+        # Ensure index_tensor is long type (required by scatter)
+        index_tensor = index_tensor.long()
+        self.final_global_refined_coords = self.final_global_refined_coords.scatter(
+            dim=1,  # scatter along atom dimension
+            index=index_tensor,
+            src=src_tensor
+        )
+
 
         cc, total_loss, loss_dict , time_loss_dict = refine_loss(
             crop_idx,
@@ -533,8 +556,11 @@ class Engine:
             self.refine_args,
             geometric_adapter=self.geometric_adapter,  
             geometric_wrapper=self.geometric_wrapper,  
-            atom_weights=atom_radius_weights
+            atom_weights=atom_radius_weights,
+            final_global_refined_coords=self.final_global_refined_coords,
+            global_feats=self.global_feats
         )
+
 
         if iteration == 0:
             self.crop_initial_cc[crop_idx] = struct_out["initial_cc"]
@@ -578,7 +604,12 @@ class Engine:
         print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
         
         self.model.train()  # Set to training mode
-        
+        self.global_feats = {
+            "atom_pad_mask": batch["atom_pad_mask"].to(self.device),
+            "ref_element": batch["ref_element"].to(self.device),
+            "atom_to_token": batch["atom_to_token"].to(self.device),
+            "residue_index": batch["residue_index"].to(self.device)
+        }
         # Initialize best results tracking
         best_coords = None
         best_loss = float('inf')

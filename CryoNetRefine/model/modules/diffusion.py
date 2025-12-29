@@ -317,8 +317,6 @@ class AtomDiffusion(Module):
         ):
             atom_mask = atom_mask.repeat_interleave(multiplicity, 0)
       
-            if target_density is None:
-                raise ValueError("target_density is required")
             # get the schedule, which is returned as (sigma, gamma) tuple, and pair up with the next sigma and gamma
             sigmas = self.sample_schedule(num_sampling_steps)
             if self.norm_sigmas_flag:
@@ -332,7 +330,7 @@ class AtomDiffusion(Module):
             atom_coords = initial_atom_coords 
             atom_coords_denoised = None
             # compute initial cc
-            if iteration == 0:
+            if iteration == 0 and (target_density is not None):
                 initial_cc, _ = compute_overall_cc_loss(
                     predicted_coords=initial_atom_coords,
                     target_density=target_density,

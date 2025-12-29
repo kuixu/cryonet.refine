@@ -54,6 +54,7 @@ class RefineArgs:
         "violation": 0.0,
         "clash": 0.1,
     })
+    use_global_clash: bool = False
     data_dir: str | None = None
     use_molecule_aware_cropping: bool = True 
     min_improvement = 0

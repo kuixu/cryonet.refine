@@ -310,12 +310,8 @@ class GeometricMetricWrapper:
         cb_time = time.time() - start_time - build_prot_time - rama_time - rot_time - bond_angle_time
         # 5) RamaZ 
         if weights is None or weights.get("ramaz", 1.0) > 0:
-            try:
-                z = gm.ramaz_loss(output_path)
-                loss_dict["ramaz"] = torch.relu(torch.abs(z["whole_z_score"]))
-            except Exception:
-                # If ramaz computation fails, set to zero to keep training running
-                loss_dict["ramaz"] = torch.tensor(0.0, device=device)
+            z = gm.ramaz_loss(output_path)
+            loss_dict["ramaz"] = torch.relu(torch.abs(z["whole_z_score"]))
         else:
             loss_dict["ramaz"] = torch.tensor(0.0, device=device)
         ramaz_time = time.time() - start_time - build_prot_time - rama_time - rot_time - bond_angle_time - cb_time
