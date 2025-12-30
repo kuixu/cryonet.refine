@@ -7,6 +7,8 @@ It freezes all modules except the diffusion module and uses CC loss for optimiza
 """
 
 import random,time, os
+from pathlib import Path
+import pickle
 import gc
 import numpy as np
 import torch
@@ -159,20 +161,15 @@ class Engine:
     def refine_step_with_molecule_aware_cropping(self, batch, target_density=None, iteration=0, data_dir=None, out_dir=None):
         """Perform one refinement step with molecule-type-aware cropping."""
         
-        all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
-        num_crops = len(all_crops)
-        if iteration == 0:
-            print(f"Using molecule-type-aware cropping for structure")
-            print(f"Structure info: {num_crops} crops")
-            crop_info = self.molecule_aware_cropper.get_crop_info(batch)
-            print(f"Molecule type distribution:")
-            for mol_type, count in crop_info['molecule_type_counts'].items():
-                print(f"  {mol_type}: {count} crops")
-            for i, crop in enumerate(all_crops):
-                crop_idx, crop_token_indices, molecule_type, crop_metadata = crop
-                print(f"  Crop {i}: {molecule_type} (tokens={crop_metadata['num_tokens']}, "
-                      f"sequences={len(crop_metadata['sequences'])}, "
-                      f"complete={crop_metadata['is_complete']})")
+     # 🚀 Use pre-computed cached crops instead of recomputing
+        if hasattr(self, 'cached_crop_batches') and self.cached_crop_batches is not None:
+            num_crops = len(self.cached_crop_batches)
+            all_crops = self.cached_crop_info
+        else:
+            # Fallback: compute on the fly (should not happen if cache was set up correctly)
+            all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
+            num_crops = len(all_crops)
+            print("⚠️  Warning: Using on-the-fly crop computation (cache not available)")
         
         self.optimizer.zero_grad()
         total_loss = 0.0
@@ -181,7 +178,6 @@ class Engine:
         # Keep the aggregated refined_coords on CPU to save GPU memory;
         # only the current crop will live on GPU.
         refined_coords = torch.zeros_like(batch["template_coords"].squeeze(0))
-
         self.final_global_refined_coords = batch["template_coords"].squeeze(0).clone().to(self.device)  # [1, N, 3]
 
         loss_dict_list = []
@@ -196,9 +192,25 @@ class Engine:
                 mem_allocated = torch.cuda.memory_allocated(self.device) / 1024 / 1024 / 1024  # GB
                 mem_reserved = torch.cuda.memory_reserved(self.device) / 1024 / 1024 / 1024  # GB
                 print(f"    GPU memory: allocated={mem_allocated:.2f} GB, reserved={mem_reserved:.2f} GB")
-            crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
-                batch, crop_info
-            )
+            # crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
+            #     batch, crop_info
+            # )
+            # 🚀 Use cached crop batch instead of re-extracting
+            if hasattr(self, 'cached_crop_batches') and self.cached_crop_batches is not None:
+                cached = self.cached_crop_batches[crop_idx]
+                # Move crop_batch back to GPU when needed
+                crop_batch = {}
+                for k, v in cached['crop_batch'].items():
+                    if isinstance(v, torch.Tensor):
+                        crop_batch[k] = v.to(self.device, non_blocking=True)
+                    else:
+                        crop_batch[k] = v
+                crop_token_indices = cached['crop_token_indices']
+                crop_atom_mask = cached['crop_atom_mask']
+                if isinstance(crop_atom_mask, torch.Tensor):
+                    crop_atom_mask = crop_atom_mask.to(self.device)
+            else:
+                raise ValueError("Cached crop batches not available")
             
             # Run refinement step on crop
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
@@ -383,9 +395,7 @@ class Engine:
         start_time = time.time()
         # Move only this crop's tensors to the target device.
         # This avoids putting the whole batch on GPU at once.
-        for key, value in crop_batch.items():
-            if isinstance(value, torch.Tensor):
-                crop_batch[key] = value.to(self.device, non_blocking=True)
+       
 
         initial_coords = crop_batch["template_coords"]
         # Create cache key early for atom types caching
@@ -435,16 +445,31 @@ class Engine:
         if len(initial_coords.shape) == 4:  # [B, 1, N, 3] -> [B, N, 3]
             initial_coords = initial_coords.squeeze(1)
         
-        
-        if hasattr(self, 'crop_feature_cache') and cache_key in self.crop_feature_cache and iteration > 0:
-            cached_features = self.crop_feature_cache[cache_key]
-            s = cached_features['s'].to(self.device)
-            z = cached_features['z'].to(self.device)
-            diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                                    for k, v in cached_features['diffusion_conditioning'].items()}
-            s_inputs = cached_features['s_inputs'].to(self.device)
+        cache_file = Path(data_dir) / f"{self.pdb_id}_{cache_key}.pkl"
+        if cache_file.exists():
+            if hasattr(self, 'crop_feature_cache') and cache_key in self.crop_feature_cache and iteration > 0:
+                cached_features = self.crop_feature_cache[cache_key]
+                s = cached_features['s'].to(self.device)
+                z = cached_features['z'].to(self.device)
+                diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                        for k, v in cached_features['diffusion_conditioning'].items()}
+                s_inputs = cached_features['s_inputs'].to(self.device)
+            else:
+                with cache_file.open("rb") as f:
+                    cached_features = pickle.load(f)
+                    s = cached_features['s'].to(self.device)
+                    z = cached_features['z'].to(self.device)
+                    diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                                            for k, v in cached_features['diffusion_conditioning'].items()}
+                    s_inputs = cached_features['s_inputs'].to(self.device)
+                    self.crop_feature_cache[cache_key] = {
+                        's': s.detach().cpu(),
+                        'z': z.detach().cpu(),
+                        'diffusion_conditioning': {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v 
+                                                for k, v in diffusion_conditioning.items()},
+                        's_inputs': s_inputs.detach().cpu()
+                    }
         else:
-
             with torch.no_grad():
                 self.model.eval()  # Ensure trunk is in eval mode
                 s_inputs = self.model.input_embedder(crop_batch)
@@ -459,7 +484,6 @@ class Engine:
                 z_init = z_init + self.model.token_bonds(crop_batch["token_bonds"].float())
                 if self.model.bond_type_feature:
                     z_init = z_init + self.model.token_bonds_type(crop_batch["type_bonds"].long())
-                
                 # Run trunk modules
                 s = torch.zeros_like(s_init)
                 z = torch.zeros_like(z_init)
@@ -486,7 +510,6 @@ class Engine:
                         feats=crop_batch,
                     )
                 )
-                
                 diffusion_conditioning = {
                     "q": q,
                     "c": c,
@@ -494,19 +517,17 @@ class Engine:
                     "atom_enc_bias": atom_enc_bias,
                     "atom_dec_bias": atom_dec_bias,
                     "token_trans_bias": token_trans_bias,
-                }
-                
-                # Store in cache (detach to avoid memory leaks)
-                if not hasattr(self, 'crop_feature_cache'):
-                    self.crop_feature_cache = {}
-                
-                self.crop_feature_cache[cache_key] = {
-                    's': s.detach().cpu(),  # 🚀 移到CPU以节省GPU显存
+                }        
+                cache_data = {
+                    's': s.detach().cpu(), 
                     'z': z.detach().cpu(),
                     'diffusion_conditioning': {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v 
-                                             for k, v in diffusion_conditioning.items()},
+                                                for k, v in diffusion_conditioning.items()},
                     's_inputs': s_inputs.detach().cpu()
                 }
+                with cache_file.open("wb") as f:
+                    pickle.dump(cache_data, f)
+        
         
         self.model.train()  # Set to training mode for diffusion
 
@@ -618,7 +639,83 @@ class Engine:
         
         # OPTIMIZATION: Initialize feature cache for this refinement run
         self.crop_feature_cache = {}
+        # 🚀 OPTIMIZATION: Pre-compute and cache all crops before iteration loop
+        # Since batch input is the same across all iterations, crop results are identical
+        crop_cache_file = None
+        if data_dir is not None and self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
+            data_dir_path = Path(data_dir)
+            crop_cache_file = data_dir_path / f"{self.pdb_id}_crop_cache.pkl"
+       # Try to load crop cache from file
+        if crop_cache_file is not None and crop_cache_file.exists():
+            try:
+                with crop_cache_file.open("rb") as f:
+                    cached_crops = pickle.load(f)
+                self.cached_crop_batches = cached_crops['crop_batches']
+                self.cached_crop_info = cached_crops['crop_info']
+                print(f"🚀 Loaded crop cache from: {crop_cache_file.name}")
+            except Exception as e:
+                print(f"⚠️  Failed to load crop cache, recomputing: {e}")
+                crop_cache_file = None
         
+        # Compute and cache crops if not loaded
+        if crop_cache_file is None or not crop_cache_file.exists():
+            if self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
+                print("Pre-computing crops for all iterations...")
+                all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
+                num_crops = len(all_crops)
+                
+                # Print crop info (only once)
+                print(f"Using molecule-type-aware cropping for structure")
+                print(f"Structure info: {num_crops} crops")
+                crop_info = self.molecule_aware_cropper.get_crop_info(batch)
+                print(f"Molecule type distribution:")
+                for mol_type, count in crop_info['molecule_type_counts'].items():
+                    print(f"  {mol_type}: {count} crops")
+                for i, crop in enumerate(all_crops):
+                    crop_idx, crop_token_indices, molecule_type, crop_metadata = crop
+                    print(f"  Crop {i}: {molecule_type} (tokens={crop_metadata['num_tokens']}, "
+                          f"sequences={len(crop_metadata['sequences'])}, "
+                          f"complete={crop_metadata['is_complete']})")
+                
+                # Pre-extract all crop batches and masks
+                self.cached_crop_batches = []
+                self.cached_crop_info = []
+                for crop_idx, crop_info_tuple in enumerate(all_crops):
+                    crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
+                        batch, crop_info_tuple
+                    )
+                    # Store crop_batch on CPU to save GPU memory (will move to GPU when needed)
+                    crop_batch_cpu = {}
+                    for k, v in crop_batch.items():
+                        if isinstance(v, torch.Tensor):
+                            crop_batch_cpu[k] = v.cpu()
+                        else:
+                            crop_batch_cpu[k] = v
+                    
+                    self.cached_crop_batches.append({
+                        'crop_batch': crop_batch_cpu,
+                        'crop_token_indices': crop_token_indices,
+                        'crop_atom_mask': crop_atom_mask.cpu() if isinstance(crop_atom_mask, torch.Tensor) else crop_atom_mask
+                    })
+                    self.cached_crop_info.append(crop_info_tuple)
+                
+                # Save crop cache to file
+                if crop_cache_file is not None:
+                    try:
+                        cache_data = {
+                            'crop_batches': self.cached_crop_batches,
+                            'crop_info': self.cached_crop_info
+                        }
+                        with crop_cache_file.open("wb") as f:
+                            pickle.dump(cache_data, f)
+                        print(f"Saved crop cache to: {crop_cache_file.name}")
+                    except Exception as e:
+                        print(f"Failed to save crop cache: {e}")
+            else:
+                # No cropping, set empty cache
+                self.cached_crop_batches = None
+                self.cached_crop_info = None
+                raise ValueError("No cropping method selected")
         for iteration in range(self.refine_args.num_recycles):
             # Perform refinement step
             # start_time = time.time()
