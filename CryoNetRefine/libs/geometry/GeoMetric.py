@@ -1,5 +1,5 @@
 import os
-import sys
+import sys, time
 import math
 import pickle
 import json
@@ -965,6 +965,9 @@ class GeoMetric:
             return atom14_names.index(atom_name)
         except ValueError:
             return None
+
+
+       
     def compute_bond_angle_rmsd_from_pdb(self, pdb_path: str, pred_coords_unpad_tensor: torch.Tensor, cache_key: str = None) -> Dict[str, torch.Tensor]:
         """
         Read coordinates from a PDB file and use mmtbx proxies to compute differentiable geometric RMSD.
@@ -1058,27 +1061,75 @@ class GeoMetric:
                         perm_indices.append(pred_idx_map[key])
                     else:
                         raise ValueError(f"Atom not found in original PDB: {key}")
-                
-                # for i in range(8000):
-                #     atom = list(pdb_hierarchy.atoms())[i]
-                #     atom_xyz = atom.xyz  # (x, y, z) tuple
-                #     sites_xyz = (sites_cart[i][0], sites_cart[i][1], sites_cart[i][2])
-                #     print(f"Atom {i}: hierarchy={atom_xyz}, sites_cart={sites_xyz}")
-                #     print(f"  Match: {abs(atom_xyz[0] - sites_xyz[0]) < 0.001}")
-
+          
                 # Convert to tensor (keep on CPU to save GPU memory, move to GPU when using)
                 perm_tensor_cpu = torch.tensor(perm_indices, dtype=torch.long, device='cpu')
+                start_time = time.time()
                 energies_sites = grm.energies_sites(
                     sites_cart=sites_cart,
-                    compute_gradients=False
+                    compute_gradients=True
                 )
-                # 🚀 Cache grm, sites_cart, perm_tensor, energies_sites 
+                # 🚀 Cache grm, sites_cart, perm_tensor
                 self._rmsd_grm_cache = grm
                 self._rmsd_sites_cart_cache = sites_cart
                 self._rmsd_perm_tensor_cache = perm_tensor_cpu
                 self._rmsd_cache_key = cache_key
-                self._energies_sites = energies_sites
-                # print(f"💾 Cached GRM and atom mapping (key: {cache_key})")
+                self._energies_sites_cache = energies_sites
+                # ==========================
+                # 🚀 Build tensorized proxy cache
+                # ==========================
+
+                bond_i = []
+                bond_j = []
+                bond_ideal = []
+
+                # Simple bonds
+                for proxy in energies_sites.bond_proxies.simple:
+                    if hasattr(proxy, "origin_id") and proxy.origin_id != 0:
+                        continue
+                    i, j = proxy.i_seqs
+                    bond_i.append(i)
+                    bond_j.append(j)
+                    bond_ideal.append(proxy.distance_ideal)
+
+                # ASU bonds
+                for proxy in energies_sites.bond_proxies.asu:
+                    if hasattr(proxy, "origin_id") and proxy.origin_id != 0:
+                        continue
+                    bond_i.append(proxy.i_seq)
+                    bond_j.append(proxy.j_seq)
+                    bond_ideal.append(proxy.distance_ideal)
+
+                # Convert to CPU tensors for caching (to GPU later)
+                self._bond_i_cpu = torch.tensor(bond_i, dtype=torch.long)
+                self._bond_j_cpu = torch.tensor(bond_j, dtype=torch.long)
+                self._bond_ideal_cpu = torch.tensor(bond_ideal, dtype=torch.float64)
+
+
+                # ================
+                # 🚀 Angle proxies
+                # ================
+                angle_i = []
+                angle_j = []
+                angle_k = []
+                angle_ideal = []
+
+                for proxy in energies_sites.angle_proxies:
+                    if hasattr(proxy, "origin_id") and proxy.origin_id != 0:
+                        continue
+                    i, j, k = proxy.i_seqs
+                    angle_i.append(i)
+                    angle_j.append(j)
+                    angle_k.append(k)
+                    angle_ideal.append(proxy.angle_ideal)
+
+                self._angle_i_cpu = torch.tensor(angle_i, dtype=torch.long)
+                self._angle_j_cpu = torch.tensor(angle_j, dtype=torch.long)
+                self._angle_k_cpu = torch.tensor(angle_k, dtype=torch.long)
+                self._angle_ideal_cpu = torch.tensor(angle_ideal, dtype=torch.float64)
+
+
+                # print(f"💾 Cached GRM and atom mapping (key: {cache_key}), Time: {time.time() - start_time:.4f} seconds")
                 
             except Exception as e:
                 print(f"Warning: Error in RMSD calculation for {pdb_path}: {e}")
@@ -1094,108 +1145,69 @@ class GeoMetric:
             grm = self._rmsd_grm_cache
             sites_cart = self._rmsd_sites_cart_cache
             perm_tensor_cpu = self._rmsd_perm_tensor_cache
-            energies_sites = self._energies_sites
+            energies_sites = self._energies_sites_cache
             # print(f"🚀 Using cached GRM and atom mapping (key: {cache_key})")
         # Move perm_tensor to target device
         perm_tensor = perm_tensor_cpu.to(pred_coords_unpad_tensor.device)
         pred_coords_aligned = pred_coords_unpad_tensor[perm_tensor]
-        
         # Upgrade precision to float64 to reduce numerical errors
         pred_coords_aligned_f64 = pred_coords_aligned.to(dtype=torch.float64)
-        # Get energies_sites object (use mmtbx sites_cart to create proxies)
-        # bond_deviations = energies_sites.bond_deviations()
-        # angle_deviations = energies_sites.angle_deviations()
-        # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
-        # angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
-        # print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
-        # Perform RMSD calculation using differentiable, reordered coords tensor
-        
-        # Compute differentiable bond RMSD
-        bond_deltas_sq = []
-        bond_proxies = energies_sites.bond_proxies
-        
-        # Handle simple bonds (intra-residue bonds)
-        for proxy in bond_proxies.simple:
-            # Only process covalent bonds (origin_id=0)
-            if hasattr(proxy, 'origin_id') and proxy.origin_id != 0:
-                continue
-                
-            i_seq, j_seq = proxy.i_seqs
-            
-            # Compute actual bond length (differentiable, use more stable vector_norm)
-            site1 = pred_coords_aligned_f64[i_seq]
-            site2 = pred_coords_aligned_f64[j_seq]
-            distance_model = torch.linalg.vector_norm(site2 - site1, ord=2)
-            
-            # Delta = ideal - model (consistent with mmtbx)
-            delta = proxy.distance_ideal - distance_model
-            bond_deltas_sq.append(delta * delta)
-        
-        # Handle ASU bonds (symmetry-related bonds, if any)
-        for proxy in bond_proxies.asu:
-            if hasattr(proxy, 'origin_id') and proxy.origin_id != 0:
-                continue
-                
-            i_seq = proxy.i_seq
-            j_seq = proxy.j_seq
-            site1 = pred_coords_aligned_f64[i_seq]
-            site2 = pred_coords_aligned_f64[j_seq]
-            distance_model = torch.linalg.vector_norm(site2 - site1, ord=2)
-            delta = proxy.distance_ideal - distance_model
-            bond_deltas_sq.append(delta * delta)
-        # Compute bond RMSD
-        if bond_deltas_sq:
-            bond_deltas_sq_tensor = torch.stack(bond_deltas_sq)
-            bond_rmsd = torch.sqrt(torch.mean(bond_deltas_sq_tensor))
+
+        start_time = time.time()
+        # ============================================================
+        # 🚀 Load cached proxy tensors to device (same as coords)
+        # ============================================================
+        device = pred_coords_unpad_tensor.device
+
+        bond_i = self._bond_i_cpu.to(device)
+        bond_j = self._bond_j_cpu.to(device)
+        bond_ideal = self._bond_ideal_cpu.to(device)
+
+        angle_i = self._angle_i_cpu.to(device)
+        angle_j = self._angle_j_cpu.to(device)
+        angle_k = self._angle_k_cpu.to(device)
+        angle_ideal = self._angle_ideal_cpu.to(device)
+
+        # ============================================================
+        # 🚀 Vectorized bond RMSD (same logic as original)
+        # ============================================================
+        if bond_i.numel() > 0:
+            p1 = pred_coords_aligned_f64[bond_i]
+            p2 = pred_coords_aligned_f64[bond_j]
+            dist = torch.linalg.vector_norm(p2 - p1, dim=-1)
+            delta = bond_ideal - dist
+            bond_rmsd = torch.sqrt(torch.mean(delta * delta))
         else:
-            bond_rmsd = torch.tensor(0.0, requires_grad=True)
-        
-        
-        # Compute differentiable angle RMSD
-        angle_deltas_sq = []
-        angle_proxies = energies_sites.angle_proxies
-        
-        for proxy in angle_proxies:
-            # Only process covalent angles (origin_id=0)
-            if hasattr(proxy, 'origin_id') and proxy.origin_id != 0:
-                continue
-                
-            i_seq, j_seq, k_seq = proxy.i_seqs
-            
-            # Compute actual angle (differentiable, use more stable atan2 method)
-            site1 = pred_coords_aligned_f64[i_seq]
-            site2 = pred_coords_aligned_f64[j_seq]  # central atom
-            site3 = pred_coords_aligned_f64[k_seq]
-            
-            vec1 = site1 - site2
-            vec2 = site3 - site2
-            
-            # Use atan2(||cross||, dot) to compute angle, consistent with cctbx
-            # This is more stable than acos(dot), avoiding numerical issues
-            cross_product = torch.cross(vec1, vec2)
-            cross_norm = torch.linalg.vector_norm(cross_product, ord=2)
-            dot_product = torch.dot(vec1, vec2)
-            
-            # Compute angle (radians -> degrees)
-            angle_model_rad = torch.atan2(cross_norm, dot_product)
-            angle_model = angle_model_rad * 180.0 / math.pi
-            
-            # Delta = model - ideal
-            delta = angle_model - proxy.angle_ideal
-            
-            # Wrap into [-180, 180] (consistent with cctbx)
-            # This ensures correct difference (e.g., 179° and -179° are only 2° apart)
+            bond_rmsd = torch.tensor(0.0, dtype=torch.float64, device=device, requires_grad=True)
+
+        # ============================================================
+        # 🚀 Vectorized angle RMSD (same logic: atan2 + wrap)
+        # ============================================================
+        if angle_i.numel() > 0:
+            s1 = pred_coords_aligned_f64[angle_i]
+            s2 = pred_coords_aligned_f64[angle_j]
+            s3 = pred_coords_aligned_f64[angle_k]
+
+            v1 = s1 - s2
+            v2 = s3 - s2
+
+            cross = torch.cross(v1, v2)
+            cross_norm = torch.linalg.vector_norm(cross, dim=-1)
+            dot = torch.sum(v1 * v2, dim=-1)
+
+            angle_model = torch.atan2(cross_norm, dot) * 180.0 / math.pi
+
+            delta = angle_model - angle_ideal
+
+            # mmtbx wrap
             delta = delta - 360.0 * torch.round(delta / 360.0)
-            
-            angle_deltas_sq.append(delta * delta)
-        
-        # Compute angle RMSD
-        if angle_deltas_sq:
-            angle_deltas_sq_tensor = torch.stack(angle_deltas_sq)
-            angle_rmsd = torch.sqrt(torch.mean(angle_deltas_sq_tensor))
+
+            angle_rmsd = torch.sqrt(torch.mean(delta * delta))
         else:
-            angle_rmsd = torch.tensor(0.0, requires_grad=True)
-        # print(f'self debug bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
+            angle_rmsd = torch.tensor(0.0, dtype=torch.float64, device=device, requires_grad=True)
+
+
+        # print(f"Bond RMSD: {bond_rmsd}, Angle RMSD: {angle_rmsd}, Time: {time.time() - start_time:.4f} seconds")
         return {
             "bond_rmsd": bond_rmsd,
             "angle_rmsd": angle_rmsd,

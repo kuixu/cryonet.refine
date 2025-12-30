@@ -71,7 +71,7 @@ def probe_style_clash_loss(
     softness: float = 10.0,       
     exclude_neighbor_distance: int = 1,  
     eps: float = 1e-6,
-    chunk_size: int = 1000,  # Chunk size for batch processing, can be adjusted based on GPU memory
+    chunk_size: int = 10000,  # Chunk size for batch processing, can be adjusted based on GPU memory
 ):
     device = predicted_coords.device
     B, N, _ = predicted_coords.shape
@@ -405,5 +405,5 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
         time_loss_dict["ramaz"] = 0.0
     
     time_loss_dict["CC_time"] = CC_time
-
+    time_loss_dict["total_loss_time"] = time.time() - start_time
     return cc_value, total_loss, loss_dict, time_loss_dict
