@@ -544,7 +544,6 @@ class Engine:
                 multiplicity=1,
                 max_parallel_samples=1,
                 target_density=target_density,
-                resolution=self.refine_args.resolution,
                 iteration=iteration,
                 atom_weights=atom_radius_weights
             )
