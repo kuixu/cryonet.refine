@@ -309,7 +309,6 @@ class AtomDiffusion(Module):
             multiplicity=1,
             max_parallel_samples=None,
             target_density=None,
-            resolution=1.9,
             use_eps_flag=False,
             iteration=0,
             atom_weights=None,
@@ -335,8 +334,6 @@ class AtomDiffusion(Module):
                     predicted_coords=initial_atom_coords,
                     target_density=target_density,
                     feats=network_condition_kwargs["feats"],
-                    resolution=resolution,
-                    voxel_size=target_density.voxel_size,
                     atom_weights=atom_weights
                 )
             else:

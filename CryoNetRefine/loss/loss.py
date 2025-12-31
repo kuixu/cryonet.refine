@@ -6,27 +6,26 @@ from CryoNetRefine.data.write.utils import write_refined_structure_pdb, write_re
 from CryoNetRefine.libs.density.density import DensityInfo, mol_atom_density
 from CryoNetRefine.loss.geometric import GeometricAdapter, GeometricMetricWrapper
 
-def compute_overall_cc_loss(predicted_coords, target_density, feats, resolution=1.9, voxel_size=1.0, atom_weights=None):
+def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weights=None):
     """
     Compute overall cross-correlation loss between predicted structure and target density.
     input: predicted_coords: [batch_size, num_atoms, 3]
     input: target_density: DensityInfo
     input: feats: dict, contains atom_pad_mask and atom_resolved_mask
-    input: resolution: float, resolution of the target density
     input: voxel_size: float, voxel size of the target density
     output: cc_cos: float, mean cosine similarity
     output: loss_den_cos: float, mean 1-cosine similarity
     """
     batch_size, num_atoms, _ = predicted_coords.shape
     device = predicted_coords.device
-
-    if hasattr(target_density, 'device') and target_density.device != device:
-        target_density = target_density.to(device)
     if (batch_size != 1):
         raise ValueError("batch_size must be 1")
-    
-    for batch_idx in range(batch_size):
-        # 
+    batch_idx = 0
+    cc_cos_list = []
+    loss_den_cos_list = []
+    for target_density_obj in target_density:
+        resolution = target_density_obj.resolution
+        voxel_size = target_density_obj.voxel_size
         current_atom_coords = predicted_coords[batch_idx]  # [num_atoms, 3]
         # unpad
         pad_masks = feats["atom_pad_mask"].squeeze(0)
@@ -57,11 +56,17 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, resolution=
             device=device
         )
 
-        t_ov, m_ov = target_density.overlap_right(mol_den)
+        t_ov, m_ov = target_density_obj.overlap_right(mol_den)
         cc_cos = F.cosine_similarity(t_ov.reshape(1, -1), m_ov.reshape(1, -1))[0]
         loss_den_cos = 1 - cc_cos
-    return cc_cos, loss_den_cos
-
+        cc_cos_list.append(cc_cos)
+        loss_den_cos_list.append(loss_den_cos)
+    if len(cc_cos_list) > 0:
+        cc_cos_tensor = torch.stack(cc_cos_list)
+        loss_den_cos_tensor = torch.stack(loss_den_cos_list)
+        return torch.mean(cc_cos_tensor), torch.mean(loss_den_cos_tensor)
+    else:
+        return torch.tensor(0.0, device=device), torch.tensor(1.0, device=device)
 
 
 def probe_style_clash_loss(
@@ -328,8 +333,6 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
     if den_w > 0.0 and target_density is not None:
         cc_value, cc_loss = compute_overall_cc_loss(
             predicted_coords, target_density, feats,
-            resolution=args.resolution,
-            voxel_size=target_density.voxel_size,
             atom_weights=atom_weights
         )
 

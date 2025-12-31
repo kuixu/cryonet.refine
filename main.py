@@ -44,8 +44,8 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--cache", type=click.Path(exists=False), help="Cache directory")
 @click.option("--checkpoint", type=click.Path(exists=True), help="Model checkpoint", default=None)
 @click.option("--seed", type=int, help="Random seed", default=11)
-@click.option("--target_density", type=click.Path(exists=True), help="Target density map (.mrc file)", default=None)
-@click.option("--resolution", type=float, help="Resolution for density map operations", default=None)
+@click.option("--target_density", multiple=True, type=click.Path(exists=True), help="Target density map (.mrc file)", default=None)
+@click.option("--resolution", multiple=True, type=float, help="Resolution for density map operations", default=None)
 @click.option("--max_tokens", type=int, help="Maximum number of tokens for cropping (0 to disable)", default=512)
 @click.option("--gamma_0", type=float, help="Gamma 0 parameter", default=-0.5)
 @click.option("--recycles", type=int, help="Number of refinement recycles", default=300)
@@ -70,8 +70,8 @@ def refine(
     checkpoint: Optional[str] = None,
     out_suffix: str = "refine",
     seed: Optional[int] = 11,
-    target_density: Optional[str] = None,
-    resolution: float = 1.9,
+    target_density: Optional[tuple] = None,
+    resolution: Optional[tuple] = None,
     max_tokens: int = 512,
     recycles: int = 300,
     gamma_0: float = -0.5,
@@ -148,10 +148,12 @@ def refine(
         target_density_obj = None
         resolution = None
     else:
-        target_density_obj = DensityInfo(mrc_path=target_density, resolution=resolution)
         assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
+        if len(target_density) == 1:
+            target_density_obj = [DensityInfo(mrc_path=target_density[0], resolution=resolution[0], datatype="torch", device=device)]
+        else:
+            target_density_obj = [DensityInfo(mrc_path=td, resolution=res, datatype="torch", device=device) for td, res in zip(target_density, resolution)]
     refine_args = RefineArgs()
-    refine_args.resolution = resolution
     refine_args.data_dir = data_dir
     refine_args.num_recycles = recycles
     refine_args.weight_dict["clash"] = clash
