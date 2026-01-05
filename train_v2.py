@@ -278,7 +278,7 @@ def train(
             click.echo(f"🔄 Resuming training from checkpoint: {resume_checkpoint_path}")
             click.echo(f"{'='*80}\n")
             # 加载checkpoint
-            resume_checkpoint = torch.load(resume_checkpoint_path, map_location="cpu")
+            resume_checkpoint = torch.load(resume_checkpoint_path, map_location="cpu", weights_only=False)
             
             # 加载模型状态
             original_model = model_module.module if hasattr(model_module, 'module') else model_module
@@ -534,7 +534,7 @@ def train(
                 
             # 保存当前 epoch 模型 checkpoint
             original_model = model_module.module if hasattr(model_module, 'module') else model_module
-            checkpoint_epoch = torch.load(checkpoint, map_location="cpu")
+            checkpoint_epoch = torch.load(checkpoint, map_location="cpu", weights_only=False)
             
             # 只更新训练过的参数
             current_state_dict = checkpoint_epoch['state_dict']
@@ -580,7 +580,7 @@ def train(
                 
                 # 保存最好的模型
                 original_model = model_module.module if hasattr(model_module, 'module') else model_module
-                checkpoint_best = torch.load(checkpoint, map_location="cpu")
+                checkpoint_best = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 
                 # 只更新训练过的参数
                 current_state_dict_best = checkpoint_best['state_dict']
