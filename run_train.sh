@@ -33,5 +33,4 @@ CUDA_VISIBLE_DEVICES=0,1,2 torchrun \
     --recycles $recycles \
     --epoch_early_stop_patience $epoch_early_stop_patience \
     --resume $resume \
-    --den $den 
-    | tee $output_dir/train.log
+    --den $den 2>&1 | tee $output_dir/train.log
