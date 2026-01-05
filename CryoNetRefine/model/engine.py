@@ -10,6 +10,7 @@ import random,time, os
 from pathlib import Path
 import pickle
 import gc
+from functools import partial
 import numpy as np
 import torch
 from CryoNetRefine.data.const import atom_weight, atomic_to_symbol
@@ -108,32 +109,42 @@ class Engine:
                 sm.atom_attention_encoder.activation_checkpointing = False
             if hasattr(sm, "atom_attention_decoder"):
                 sm.atom_attention_decoder.activation_checkpointing = False
+    def _get_model(self):
+        """Get the actual model, handling DDP wrapping."""
+        if hasattr(self.model, 'module'):
+            # Model is wrapped with DDP
+            return self.model.module
+        return self.model
     def _freeze_modules(self):
         """Freeze all modules except the diffusion module."""
-        print("Freezing modules except diffusion module...")
+        # print("Freezing modules except diffusion module...")
+        model = self._get_model()
+        
         # Freeze all parameters first
-        for param in self.model.parameters():
+        for param in model.parameters():
             param.requires_grad = False
         # Unfreeze only diffusion module parameters
         diffusion_params = 0
         unfrozen_paras = ['structure_module']
-        for name, param in self.model.named_parameters():
+        for name, param in model.named_parameters():
             for unfrozen_para in unfrozen_paras:
                 if unfrozen_para in name:
                     param.requires_grad = True
                     diffusion_params += param.numel()
-        print(f"Unfrozen diffusion module parameters: {diffusion_params:,}")
+        # print(f"Unfrozen diffusion module parameters: {diffusion_params:,}")
         # Verify that we have trainable parameters
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
         if not trainable_params:
             raise ValueError("No trainable parameters found! Check if structure_module exists.")
-        print(f"Total trainable parameters: {sum(p.numel() for p in trainable_params):,}")
+        # print(f"Total trainable parameters: {sum(p.numel() for p in trainable_params):,}")
         
     def _setup_optimizer(self):
         """Setup optimizer for diffusion module parameters only."""
+        model = self._get_model()
+        
         # Get trainable parameters (only diffusion module)
         trainable_params = [
-            param for param in self.model.parameters() 
+            param for param in model.parameters() 
             if param.requires_grad
         ]
         if not trainable_params:
@@ -143,7 +154,8 @@ class Engine:
             lr=self.refine_args.learning_rate,
             weight_decay=0
         )
-        print(f"Setup optimizer with {len(trainable_params)} parameter groups")
+        # print(f"Setup optimizer with {len(trainable_params)} parameter groups")
+
 
     def should_use_cropping(self, batch):
         """Check if cropping should be used for this batch."""
@@ -263,12 +275,12 @@ class Engine:
         # OPTIMIZATION: Clear feature cache to prevent memory leaks
         if hasattr(self, 'crop_feature_cache'):
             self.crop_feature_cache.clear()
-            print("🧹 Cleared feature cache")
+            # print("🧹 Cleared feature cache")
         
         # Clear atom types cache
         if hasattr(self, 'crop_atom_types_cache'):
             self.crop_atom_types_cache.clear()
-            print("🧹 Cleared atom types cache")
+            # print("🧹 Cleared atom types cache")
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -390,6 +402,52 @@ class Engine:
             return self.crop_atom_types_cache[cache_key]['atom_radius_weights']
         return None
 
+    def _move_diffusion_conditioning_to_device(self, diffusion_conditioning, device):
+        """Helper function to move diffusion_conditioning to device, handling to_keys partial function."""
+        result = {}
+        for k, v in diffusion_conditioning.items():
+            if isinstance(v, torch.Tensor):
+                result[k] = v.to(device)
+            elif isinstance(v, partial) and k == 'to_keys':
+                # Handle to_keys partial function: extract indexing_matrix and move to device
+                if 'indexing_matrix' in v.keywords:
+                    indexing_matrix = v.keywords['indexing_matrix'].to(device)
+                    # Recreate the partial function with updated indexing_matrix
+                    result[k] = partial(
+                        v.func,
+                        indexing_matrix=indexing_matrix,
+                        W=v.keywords.get('W'),
+                        H=v.keywords.get('H')
+                    )
+                else:
+                    result[k] = v
+            else:
+                result[k] = v
+        return result
+    
+    def _move_diffusion_conditioning_to_cpu(self, diffusion_conditioning):
+        """Helper function to move diffusion_conditioning to CPU, handling to_keys partial function."""
+        result = {}
+        for k, v in diffusion_conditioning.items():
+            if isinstance(v, torch.Tensor):
+                result[k] = v.detach().cpu()
+            elif isinstance(v, partial) and k == 'to_keys':
+                # Handle to_keys partial function: extract indexing_matrix and move to CPU
+                if 'indexing_matrix' in v.keywords:
+                    indexing_matrix = v.keywords['indexing_matrix'].detach().cpu()
+                    # Recreate the partial function with updated indexing_matrix
+                    result[k] = partial(
+                        v.func,
+                        indexing_matrix=indexing_matrix,
+                        W=v.keywords.get('W'),
+                        H=v.keywords.get('H')
+                    )
+                else:
+                    result[k] = v
+            else:
+                result[k] = v
+        return result
+
     def refine_step_single_crop(self, crop_batch, target_density=None, iteration=0, data_dir=None, out_dir=None, crop_idx=0, crop_atom_mask=None):
         """Perform refinement on a single crop."""
         start_time = time.time()
@@ -451,39 +509,44 @@ class Engine:
                 cached_features = self.crop_feature_cache[cache_key]
                 s = cached_features['s'].to(self.device)
                 z = cached_features['z'].to(self.device)
-                diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                                        for k, v in cached_features['diffusion_conditioning'].items()}
+                diffusion_conditioning = self._move_diffusion_conditioning_to_device(
+                    cached_features['diffusion_conditioning'], self.device
+                )
                 s_inputs = cached_features['s_inputs'].to(self.device)
             else:
                 with cache_file.open("rb") as f:
                     cached_features = pickle.load(f)
                     s = cached_features['s'].to(self.device)
                     z = cached_features['z'].to(self.device)
-                    diffusion_conditioning = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                                            for k, v in cached_features['diffusion_conditioning'].items()}
+                    diffusion_conditioning = self._move_diffusion_conditioning_to_device(
+                        cached_features['diffusion_conditioning'], self.device
+                    )
                     s_inputs = cached_features['s_inputs'].to(self.device)
                     self.crop_feature_cache[cache_key] = {
                         's': s.detach().cpu(),
                         'z': z.detach().cpu(),
-                        'diffusion_conditioning': {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v 
-                                                for k, v in diffusion_conditioning.items()},
+                        'diffusion_conditioning': self._move_diffusion_conditioning_to_cpu(diffusion_conditioning),
                         's_inputs': s_inputs.detach().cpu()
                     }
         else:
+            # Get actual model (handles DDP wrapping)
+            model = self._get_model()
+            
             with torch.no_grad():
-                self.model.eval()  # Ensure trunk is in eval mode
-                s_inputs = self.model.input_embedder(crop_batch)
-                s_init = self.model.s_init(s_inputs)
+                model.eval()  # Ensure trunk is in eval mode
+                s_inputs = model.input_embedder(crop_batch)
+                s_init = model.s_init(s_inputs)
                 
                 z_init = (
-                    self.model.z_init_1(s_inputs)[:, :, None]
-                    + self.model.z_init_2(s_inputs)[:, None, :]
+                    model.z_init_1(s_inputs)[:, :, None]
+                    + model.z_init_2(s_inputs)[:, None, :]
                 )
-                relative_position_encoding = self.model.rel_pos(crop_batch)
+                relative_position_encoding = model.rel_pos(crop_batch)
                 z_init = z_init + relative_position_encoding
-                z_init = z_init + self.model.token_bonds(crop_batch["token_bonds"].float())
-                if self.model.bond_type_feature:
-                    z_init = z_init + self.model.token_bonds_type(crop_batch["type_bonds"].long())
+                z_init = z_init + model.token_bonds(crop_batch["token_bonds"].float())
+                if model.bond_type_feature:
+                    z_init = z_init + model.token_bonds_type(crop_batch["type_bonds"].long())
+                
                 # Run trunk modules
                 s = torch.zeros_like(s_init)
                 z = torch.zeros_like(z_init)
@@ -492,24 +555,25 @@ class Engine:
                 recycling_steps = 0
                 for i in range(recycling_steps + 1):
                     # Apply recycling (minimal)
-                    s = s_init + self.model.s_recycle(self.model.s_norm(s))
-                    z = z_init + self.model.z_recycle(self.model.z_norm(z))
+                    s = s_init + model.s_recycle(model.s_norm(s))
+                    z = z_init + model.z_recycle(model.z_norm(z))
                     
-                    if self.model.use_templates:
-                        z_t = self.model.template_module(z, crop_batch, pair_mask, use_kernels=self.model.use_kernels)
+                    if model.use_templates:
+                        z_t = model.template_module(z, crop_batch, pair_mask, use_kernels=model.use_kernels)
                         inverted_mask = ~crop_batch['token_pair_missing_mask']
                         z = z + z_t * inverted_mask.squeeze(1).unsqueeze(-1).expand_as(z)
-                    s, z = self.model.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, use_kernels=self.model.use_kernels)
+                    s, z = model.pairformer_module(s, z, mask=mask, pair_mask=pair_mask, use_kernels=model.use_kernels)
                     
                 # Get diffusion conditioning
                 q, c, to_keys, atom_enc_bias, atom_dec_bias, token_trans_bias = (
-                    self.model.diffusion_conditioning(
+                    model.diffusion_conditioning(
                         s_trunk=s,
                         z_trunk=z,
                         relative_position_encoding=relative_position_encoding,
                         feats=crop_batch,
                     )
                 )
+                
                 diffusion_conditioning = {
                     "q": q,
                     "c": c,
@@ -517,7 +581,7 @@ class Engine:
                     "atom_enc_bias": atom_enc_bias,
                     "atom_dec_bias": atom_dec_bias,
                     "token_trans_bias": token_trans_bias,
-                }        
+                }
                 cache_data = {
                     's': s.detach().cpu(), 
                     'z': z.detach().cpu(),
@@ -528,13 +592,14 @@ class Engine:
                 with cache_file.open("wb") as f:
                     pickle.dump(cache_data, f)
         
-        
-        self.model.train()  # Set to training mode for diffusion
+        # Get actual model (handles DDP wrapping)
+        model = self._get_model()
+        model.train()  # Set to training mode for diffusion
 
         feats = crop_batch
 
         with torch.set_grad_enabled(True):
-            struct_out = self.model.structure_module.den_sample(
+            struct_out = model.structure_module.den_sample(
                 s_trunk=s.float(),
                 s_inputs=s_inputs.float(),
                 diffusion_conditioning=diffusion_conditioning,
@@ -622,8 +687,8 @@ class Engine:
             loss_history: History of losses during refinement
         """
         print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
-        
-        self.model.train()  # Set to training mode
+        model = self._get_model()
+        model.train()  # Set 
         self.global_feats = {
             "atom_pad_mask": batch["atom_pad_mask"].to(self.device),
             "ref_element": batch["ref_element"].to(self.device),
@@ -770,8 +835,8 @@ class Engine:
             if self.patience_counter >= self.refine_args.early_stopping_patience:
                 print(f"Early stopping at iteration {iteration} (no improvement for {self.patience_counter} steps)")
                 break
-                
-        self.model.eval()  # Set back to eval mode
+        model = self._get_model()
+        model.eval()  # Set back 
         
         # Save best results info to refiner object for external access
         self.best_iteration = best_iteration
@@ -788,9 +853,10 @@ class Engine:
         
     def _save_checkpoint(self, iteration, coords, best_loss=None, best_iteration=None):
         """Save refinement checkpoint."""
+        model = self._get_model()
         checkpoint = {
             'iteration': iteration,
-            'model_state_dict': {k: v for k, v in self.model.state_dict().items() if 'structure_module' in k},
+            'model_state_dict': {k: v for k, v in model.state_dict().items() if 'structure_module' in k},
             'optimizer_state_dict': self.optimizer.state_dict(),
             'loss_history': self.loss_history,
             'best_loss': best_loss if best_loss is not None else self.best_loss,

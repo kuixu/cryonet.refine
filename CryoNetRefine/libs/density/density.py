@@ -243,7 +243,8 @@ class DensityInfo:
         x0, y0, z0 = list(mapfile.header["origin"].tolist())
         apix = mapfile.voxel_size.x
 
-        offset = [x + x0/apix, y + y0/apix, z + z0/apix]
+        # offset = [x + x0/apix, y + y0/apix, z + z0/apix]
+        offset = [x*apix + x0, y*apix + y0, z*apix + z0]
         offset = (offset[crs[0]], offset[crs[1]], offset[crs[2]])
         
         cella = np.array(mapfile.header["cella"].tolist())
