@@ -263,6 +263,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         model_coord = predicted_coords[0]  # Take first model
         pad_masks = feats["atom_pad_mask"].squeeze(0)
         present_mask = feats['template_atom_present_mask'].squeeze((0, 1))
+        breakpoint()
         pred_coords_unpad_tensor = model_coord[pad_masks.bool() & present_mask.bool()]
         #skip atom_is not present
         crop_key = f"{crop_idx}"
