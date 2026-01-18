@@ -242,7 +242,8 @@ class MoleculeTypeAwareSlidingWindowCropper:
         # Atom-level keys to handle explicitly
         atom_level_keys = ['ref_pos', 'atom_resolved_mask', 'ref_atom_name_chars', 'ref_element', 
                            'ref_charge', 'ref_chirality', 'atom_backbone_feat', 'ref_space_uid',
-                           'bfactor', 'plddt', 'coords', 'template_coords', 'template_resolved_mask']
+                           'bfactor', 'plddt', 'coords', 'template_coords', 'template_resolved_mask',
+                           'template_atom_present_mask']
         
         for key in atom_level_keys:
             if key in batch and key not in crop_batch:
@@ -299,7 +300,8 @@ class MoleculeTypeAwareSlidingWindowCropper:
             
             atom_padding_keys = ['ref_pos', 'atom_resolved_mask', 'ref_atom_name_chars', 'ref_element', 
                                 'ref_charge', 'ref_chirality', 'atom_backbone_feat', 'ref_space_uid',
-                                'bfactor', 'plddt', 'template_coords', 'template_resolved_mask', 'coords']
+                                'bfactor', 'plddt', 'template_coords', 'template_resolved_mask', 'coords',
+                                'template_atom_present_mask']
             
             for key in atom_padding_keys:
                 if key in crop_batch and isinstance(crop_batch[key], torch.Tensor):
@@ -307,8 +309,15 @@ class MoleculeTypeAwareSlidingWindowCropper:
                         padding = torch.zeros(1, padding_size, device=crop_batch[key].device, dtype=crop_batch[key].dtype)
                         crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
                     elif len(crop_batch[key].shape) == 3:
-                        padding = torch.zeros(1, padding_size, crop_batch[key].shape[2], device=crop_batch[key].device, dtype=crop_batch[key].dtype)
-                        crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
+                        # Handle both [1, N, ...] and [1, 1, N] shapes
+                        if crop_batch[key].shape[1] == 1:
+                            # [1, 1, N] shape - pad along dim 2
+                            padding = torch.zeros(1, 1, padding_size, device=crop_batch[key].device, dtype=crop_batch[key].dtype)
+                            crop_batch[key] = torch.cat([crop_batch[key], padding], dim=2)
+                        else:
+                            # [1, N, ...] shape - pad along dim 1
+                            padding = torch.zeros(1, padding_size, crop_batch[key].shape[2], device=crop_batch[key].device, dtype=crop_batch[key].dtype)
+                            crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
                     elif len(crop_batch[key].shape) == 4 and key in ['template_coords', 'coords']:
                         padding = torch.zeros(1, crop_batch[key].shape[1], padding_size, crop_batch[key].shape[3], device=crop_batch[key].device, dtype=crop_batch[key].dtype)
                         crop_batch[key] = torch.cat([crop_batch[key], padding], dim=2)
