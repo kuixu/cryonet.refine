@@ -41,7 +41,6 @@ def to_pdb(
     prev_polymer_resnum = -1
     # Tracks ligand indices.
     ligand_index_offset = 0
-
     # Add all atom sites.
     for chain in structure.chains:
         # We rename the chains in alphabetical order
@@ -62,7 +61,7 @@ def to_pdb(
                 atom_name = str(atom["name"])
                 # Skip terminal OXT atoms when writing PDB (cause: rama-Z loss will fail if OXT is present)
                 if atom_name == "OXT": 
-                    print(f"OXT atom found: {atom_name}")
+                    print(f"OXT atom found: {atom_name}, skip")
                     continue
                 # This should not happen on predictions, but just in case.
                 if not atom["is_present"]:

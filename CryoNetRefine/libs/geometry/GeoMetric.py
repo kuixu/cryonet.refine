@@ -652,7 +652,8 @@ class GeoMetric:
         int_zsc=torch.zeros(self.prot_len-2,dtype=float,device=self.phi_psi.device)
         phi_psi_angles=self.phi_psi
         for idx in range(0,self.prot_len-2):
-            phi,psi=float(phi_psi_angles[idx][0]),float(phi_psi_angles[idx][1])
+            # phi,psi=float(phi_psi_angles[idx][0]),float(phi_psi_angles[idx][1])
+            phi, psi = phi_psi_angles[idx][0].item(), phi_psi_angles[idx][1].item()
             phi_psi=phi_psi_angles[idx]
             rama_type=rama_types[idx]
             resname=index_to_restype_3[aa_type[idx+1]]
@@ -989,6 +990,7 @@ class GeoMetric:
             self._rmsd_perm_tensor_cache is not None
         )
         if not cache_valid:
+        # if True:
             try:
                 pdb_inp = iotbx.pdb.input(file_name=pdb_path)
                 
@@ -1069,6 +1071,12 @@ class GeoMetric:
                     sites_cart=sites_cart,
                     compute_gradients=True
                 )
+                #--------debug
+                # bond_deviations = energies_sites.bond_deviations()
+                # angle_deviations = energies_sites.angle_deviations()
+                # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
+                # angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
+                # print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
                 # 🚀 Cache grm, sites_cart, perm_tensor
                 self._rmsd_grm_cache = grm
                 self._rmsd_sites_cart_cache = sites_cart
@@ -1146,6 +1154,7 @@ class GeoMetric:
             sites_cart = self._rmsd_sites_cart_cache
             perm_tensor_cpu = self._rmsd_perm_tensor_cache
             energies_sites = self._energies_sites_cache
+            
             # print(f"🚀 Using cached GRM and atom mapping (key: {cache_key})")
         # Move perm_tensor to target device
         perm_tensor = perm_tensor_cpu.to(pred_coords_unpad_tensor.device)
@@ -1212,3 +1221,5 @@ class GeoMetric:
             "bond_rmsd": bond_rmsd,
             "angle_rmsd": angle_rmsd,
         }
+
+
