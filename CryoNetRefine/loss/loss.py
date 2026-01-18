@@ -244,11 +244,11 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
     data_dir_str = str(data_dir)
     record_id = feats["record"][0].id
     output_path = data_dir_str + f"/{record_id}_crop{crop_idx}_temp.pdb"
+    
     if feats.get("is_cropped", False):
         write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, output_path)
     else:
         write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path)
-    
     if not is_nucleic_acid:
         if geometric_adapter is None:
             adapter = GeometricAdapter(device=str(device),data_dir=data_dir)
@@ -262,7 +262,9 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
 
         model_coord = predicted_coords[0]  # Take first model
         pad_masks = feats["atom_pad_mask"].squeeze(0)
-        pred_coords_unpad_tensor = model_coord[pad_masks.bool()]
+        present_mask = feats['template_atom_present_mask'].squeeze((0, 1))
+        pred_coords_unpad_tensor = model_coord[pad_masks.bool() & present_mask.bool()]
+        #skip atom_is not present
         crop_key = f"{crop_idx}"
         if not is_nucleic_acid:
             gm = wrapper._crop_cache[crop_key]
@@ -374,7 +376,7 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
         )
         # Expose each component with weights
         for name, value in geo_losses.items():
-            loss_dict[f"geom_{name}"] = value * weights.get(name, 0.0)
+            loss_dict[f"{name}"] = value * weights.get(name, 0.0)
 
         # Combine with weights (allow per-term weights, fallback to global 'geometric')
         geom_weight = float(weights.get("geometric", 0.0))
@@ -397,10 +399,10 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
         )
     if is_nucleic_acid:
         # For nucleic acid sequences, skip geometric losses but still populate loss_dict with zeros
-        loss_dict["geom_rama"] = torch.zeros((), device=device)
-        loss_dict["geom_rotamer"] = torch.zeros((), device=device)
-        loss_dict["geom_cbeta"] = torch.zeros((), device=device)
-        loss_dict["geom_ramaz"] = torch.zeros((), device=device)
+        loss_dict["rama"] = torch.zeros((), device=device)
+        loss_dict["rotamer"] = torch.zeros((), device=device)
+        loss_dict["cbeta"] = torch.zeros((), device=device)
+        loss_dict["ramaz"] = torch.zeros((), device=device)
         time_loss_dict["build_prot"] = 0.0
         time_loss_dict["rama"] = 0.0
         time_loss_dict["rotamer"] = 0.0

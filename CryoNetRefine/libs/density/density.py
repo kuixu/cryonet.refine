@@ -85,11 +85,9 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
         atom_weight = torch.zeros(atom_coords.shape[0]) + atom_weight
     # print(atom_coords.shape, voxel_size, res)
     device = atom_coords.device
-    atom_weight = atom_weight.to(device)
     bmin = torch.floor(atom_coords.amin(dim=0))  # Calculate minimum values along dimension 0
     bmax = torch.ceil(atom_coords.amax(dim=0))
     coords_den = atom_coords / voxel_size
-    
     bcen = (bmax + bmin) / 2 / voxel_size
     
     # mol density
@@ -110,6 +108,8 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     
     # Vectorized computation for all atoms
     N = coords_den.shape[0]
+    if N == 0:
+        raise RuntimeError(f"Warning: No atoms in mol_atom_density_th for {atom_coords.shape}")
     L = 2 * gsphere  # Number of grid points per axis in the Gaussian cube
     
     # Calculate fractional offsets for each atom's position
@@ -166,6 +166,9 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     y_indices = global_coords[:, 1, ...].reshape(-1).long()
     z_indices = global_coords[:, 2, ...].reshape(-1).long()
     values = atom_cubes.reshape(-1)
+    if x_indices.numel() == 0:
+        raise RuntimeError(f"Warning: All atoms filtered out in mol_atom_density_th (N={N}, valid_mask.sum()={valid_mask.sum()})")
+        return density, box0
     assert x_indices.max() < boxsize[0], f"X index overflow: {x_indices.max()} vs {boxsize[0]}"
     assert y_indices.max() < boxsize[1], f"Y index overflow: {y_indices.max()} vs {boxsize[1]}"
     assert z_indices.max() < boxsize[2], f"Z index overflow: {z_indices.max()} vs {boxsize[2]}"

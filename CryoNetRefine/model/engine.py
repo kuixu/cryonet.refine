@@ -73,7 +73,7 @@ class Engine:
                 )
                 self.cropper = None
                 self.sequence_cropper = None
-                print(f"Molecule-aware cropping enabled: max_tokens={self.max_tokens}")
+                # print(f"Molecule-aware cropping enabled: max_tokens={self.max_tokens}")
             else:
                 raise ValueError("No cropping method selected")
         else:
@@ -198,12 +198,12 @@ class Engine:
         # GPU mem
         for crop_idx, crop_info in enumerate(all_crops):
             _, crop_token_indices, molecule_type, crop_metadata = crop_info
-            print(f"  Processing crop {crop_idx + 1}/{num_crops}: {molecule_type} "
-                  f"({crop_metadata['num_tokens']} tokens)")
+            # print(f"  Processing crop {crop_idx + 1}/{num_crops}: {molecule_type} "
+            #       f"({crop_metadata['num_tokens']} tokens)")
             if torch.cuda.is_available():
                 mem_allocated = torch.cuda.memory_allocated(self.device) / 1024 / 1024 / 1024  # GB
                 mem_reserved = torch.cuda.memory_reserved(self.device) / 1024 / 1024 / 1024  # GB
-                print(f"    GPU memory: allocated={mem_allocated:.2f} GB, reserved={mem_reserved:.2f} GB")
+                # print(f"    GPU memory: allocated={mem_allocated:.2f} GB, reserved={mem_reserved:.2f} GB")
             # crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
             #     batch, crop_info
             # )
@@ -256,10 +256,9 @@ class Engine:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        if out_dir:
-            output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
-            write_refined_structure(batch, refined_coords, data_dir, output_path)
-        
+        # if out_dir:
+        #     output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
+        #     write_refined_structure(batch, refined_coords, data_dir, output_path)
         return {
             "total_loss": total_loss.item(),
             "loss_dic_list": loss_dict_list,
@@ -285,7 +284,7 @@ class Engine:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-        print("Cleared all caches and memory")
+        # print("Cleared all caches and memory")
     
     def get_atom_types(self, crop_batch):
         """
@@ -646,18 +645,17 @@ class Engine:
             global_feats=self.global_feats
         )
 
-
         if iteration == 0:
             self.crop_initial_cc[crop_idx] = struct_out["initial_cc"]
 
         # Debug: Print crop loss info
         init_cc = self.crop_initial_cc.get(crop_idx, "N/A")
         if cc > init_cc:
-            loss_info = f"⬆ Crop {crop_idx}: init={init_cc:.4f}, cur_cc={cc:.4f}, Loss={total_loss.item():.6f}"
+            loss_info = f"⬆ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc:.3f}, Loss={total_loss.item():.3f}"
         else:
-            loss_info = f"⬇ Crop {crop_idx}: init={init_cc:.4f}, cur_cc={cc:.4f}, Loss={total_loss.item():.6f}"
+            loss_info = f"⬇ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc:.3f}, Loss={total_loss.item():.3f}"
         for key, value in loss_dict.items():
-            loss_info += f", {key}: {value.item():.6f}"
+            loss_info += f", {key}: {value.item():.3f}"
         end_time = time.time()
         time_crop = end_time - start_time
         loss_info += f", time: {time_crop:.2f} s"
@@ -686,7 +684,7 @@ class Engine:
             refined_coords: Refined coordinates
             loss_history: History of losses during refinement
         """
-        print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
+        # print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
         model = self._get_model()
         model.train()  # Set 
         self.global_feats = {
@@ -716,7 +714,7 @@ class Engine:
                     cached_crops = pickle.load(f)
                 self.cached_crop_batches = cached_crops['crop_batches']
                 self.cached_crop_info = cached_crops['crop_info']
-                print(f"🚀 Loaded crop cache from: {crop_cache_file.name}")
+                # print(f"🚀 Loaded crop cache from: {crop_cache_file.name}")
             except Exception as e:
                 print(f"⚠️  Failed to load crop cache, recomputing: {e}")
                 crop_cache_file = None
@@ -724,13 +722,13 @@ class Engine:
         # Compute and cache crops if not loaded
         if crop_cache_file is None or not crop_cache_file.exists():
             if self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
-                print("Pre-computing crops for all iterations...")
+                # print("Pre-computing crops for all iterations...")
                 all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
                 num_crops = len(all_crops)
                 
                 # Print crop info (only once)
-                print(f"Using molecule-type-aware cropping for structure")
-                print(f"Structure info: {num_crops} crops")
+                # print(f"Using molecule-type-aware cropping for structure")
+                # print(f"Structure info: {num_crops} crops")
                 crop_info = self.molecule_aware_cropper.get_crop_info(batch)
                 print(f"Molecule type distribution:")
                 for mol_type, count in crop_info['molecule_type_counts'].items():
@@ -772,7 +770,7 @@ class Engine:
                         }
                         with crop_cache_file.open("wb") as f:
                             pickle.dump(cache_data, f)
-                        print(f"Saved crop cache to: {crop_cache_file.name}")
+                        # print(f"Saved crop cache to: {crop_cache_file.name}")
                     except Exception as e:
                         print(f"Failed to save crop cache: {e}")
             else:
@@ -814,7 +812,7 @@ class Engine:
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
                     self.patience_counter = 0
-                    print(f"New best loss: {best_loss:.6f} at iteration {iteration}")
+                    # print(f"New best loss: {best_loss:.6f} at iteration {iteration}")
                 else:
                     self.patience_counter += 1
             elif cond_early_stop == "cc":
@@ -824,7 +822,7 @@ class Engine:
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
                     self.patience_counter = 0
-                    print(f"New best CC: {best_cc:.6f} at iteration {iteration}")
+                    # print(f"New best CC: {best_cc:.6f} at iteration {iteration}")
                 else:
                     self.patience_counter += 1
             else:
@@ -842,7 +840,12 @@ class Engine:
         self.best_iteration = best_iteration
         self.best_loss = best_loss
         self.best_cc = best_cc
-        
+        # 🚀 保存最佳迭代的所有损失值
+        if best_iteration >= 0 and len(loss_dict_list) > best_iteration:
+            self.best_loss_dict = loss_dict_list[best_iteration]
+        else:
+            # 如果没有找到最佳迭代，使用最后一个
+            self.best_loss_dict = loss_dict_ep if 'loss_dict_ep' in locals() else {}
         # Return best results if available, otherwise return last results
         if best_coords is not None:
             print(f"Returning best results from iteration {best_iteration} with loss {best_loss:.6f}")

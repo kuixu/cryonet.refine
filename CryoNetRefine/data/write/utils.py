@@ -293,7 +293,7 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
 
         # Set coords and presence flags
         crop_atoms["coords"] = coord_unpad
-        crop_atoms["is_present"] = True
+        # crop_atoms["is_present"] = True
         crop_coords = np.array([(x,) for x in coord_unpad], dtype=Coords)
         crop_residues["is_present"] = True
 
@@ -306,7 +306,6 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
             else structure.ensemble
         )
         interfaces = np.array([], dtype=Interface)
-
         crop_structure: StructureV2 = StructureV2(
             atoms=crop_atoms,
             bonds=crop_bonds,
