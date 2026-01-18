@@ -62,7 +62,7 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
-@click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=False)
+@click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
 def refine(
     data: str,
     out_dir: str,
@@ -88,7 +88,7 @@ def refine(
     learning_rate: float = 1.8e-4,
     max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
-    use_global_clash: bool = False,
+    use_global_clash: bool = True,
 
 ) -> None:
     """Run structure refinement with Boltz.""" 
