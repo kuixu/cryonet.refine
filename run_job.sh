@@ -33,7 +33,7 @@ date >$log;
 #     mkdir -p $out_dir
 # fi  
 
-max_tokens=1000
+max_tokens=800
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 checkpoint="${SCRIPT_DIR}/params/cryonet.refine_model_checkpoint_best26.pt"
