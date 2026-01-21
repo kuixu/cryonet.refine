@@ -76,7 +76,7 @@ def probe_style_clash_loss(
     softness: float = 10.0,       
     exclude_neighbor_distance: int = 1,  
     eps: float = 1e-6,
-    chunk_size: int = 10000,  # Chunk size for batch processing, can be adjusted based on GPU memory
+    chunk_size: int = 5000,  # Chunk size for batch processing, can be adjusted based on GPU memory
 ):
     device = predicted_coords.device
     B, N, _ = predicted_coords.shape
