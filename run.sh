@@ -12,7 +12,9 @@ fi
 max_tokens=1000
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-checkpoint="${SCRIPT_DIR}/params/cryonet.refine_model_checkpoint_best26.pt"
+# Set PYTHONPATH to include project root so CryoNetRefine package can be found
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH}"
+checkpoint="${SCRIPT_DIR}/params/CryoNet.Refine_model.pt"
 echo "Starting CryoNet.Refine..."
 echo "Input: $input_pdb_path"
 echo "Target density: $target_density"
