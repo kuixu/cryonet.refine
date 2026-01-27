@@ -37,10 +37,12 @@
 
 ### Refinement Process
 <div align="center">
-  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine.gif" alt="Refinement Process" width="70%">
+  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine.gif" alt="Refinement Process" width="90%">
 </div>
 
-### 🌐 Web Server
+---
+
+## 🌐 Web Server
 
 Try CryoNet.Refine online without installation:
 
@@ -134,9 +136,9 @@ Despite its effectiveness, CryoNet.Refine has several limitations:
 The current model supports proteins, DNA, RNA, and their complexes.
 
 ### Unsupported ligands and covalent modifications
-CryoNet.Refine does not support small-molecule ligands, including structures from the PoseBusters dataset, or covalent modifications. These entities require specialized modeling strategies beyond the current framework.
+CryoNet.Refine does not support small-molecule ligands, or covalent modifications. These entities require specialized modeling strategies beyond the current framework.
 
-### Sensitivity to missing residues
+### Performance Degradation with missing residues
 Refinement performance may decrease for structures with many missing or unresolved residues, as incomplete backbone connectivity limits the effectiveness of density-guided geometric constraints.
 
 ---
@@ -173,7 +175,7 @@ If you use CryoNet.Refine in your research, please cite our paper:
 }
 ```
 
-**Authors**: Fuyao Huang\*, Xiaozhu Yu\*, Kui Xu#, Qiangfeng Cliff Zhang#  
+**Authors**: Fuyao Huang\*, Xiaozhu Yu\*, Kui Xu#, and Qiangfeng Cliff Zhang#  
 **Paper**: [OpenReview](https://openreview.net/forum?id=NwzY2yhlme) | [PDF](https://openreview.net/pdf?id=NwzY2yhlme)
 
 **Keywords**: Protein structure refinement; Cryo-electron microscopy; Deep learning; Density-guided refinement; Geometric restraints; Diffusion model
