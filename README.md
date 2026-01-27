@@ -40,26 +40,12 @@
   <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine.gif" alt="Refinement Process" width="70%">
 </div>
 
----
+### 🌐 Web Server
 
-## 📚 Citation
+Try CryoNet.Refine online without installation:
 
-If you use CryoNet.Refine in your research, please cite our paper:
+**Web Server**: [https://cryonet.ai/refine/](https://cryonet.ai/refine/)
 
-```bibtex
-@inproceedings{huang2026cryonet,
-  title={CryoNet.Refine: A One-step Diffusion Model for Rapid Refinement of Structural Models with Cryo-EM Density Map Restraints},
-  author={Huang, Fuyao and Yu, Xiaozhu and Xu, Kui and Zhang, Qiangfeng Cliff},
-  booktitle={International Conference on Learning Representations},
-  year={2026},
-  url={https://openreview.net/forum?id=NwzY2yhlme}
-}
-```
-
-**Authors**: Fuyao Huang, Xiaozhu Yu, Kui Xu, Qiangfeng Cliff Zhang  
-**Paper**: [OpenReview](https://openreview.net/forum?id=NwzY2yhlme) | [PDF](https://openreview.net/pdf?id=NwzY2yhlme)
-
-**Keywords**: Protein structure refinement; Cryo-electron microscopy; Deep learning; Density-guided refinement; Geometric restraints; Diffusion model
 
 ---
 
@@ -140,6 +126,21 @@ cryonet.refine/
 
 ---
 
+## ⚠️ Limitations
+
+Despite its effectiveness, CryoNet.Refine has several limitations:
+
+### Supported macromolecules
+The current model supports proteins, DNA, RNA, and their complexes.
+
+### Unsupported ligands and covalent modifications
+CryoNet.Refine does not support small-molecule ligands, including structures from the PoseBusters dataset, or covalent modifications. These entities require specialized modeling strategies beyond the current framework.
+
+### Sensitivity to missing residues
+Refinement performance may decrease for structures with many missing or unresolved residues, as incomplete backbone connectivity limits the effectiveness of density-guided geometric constraints.
+
+---
+
 ## 🙏 Acknowledgements
 
 CryoNet.Refine borrows code from the **Boltz** project:
@@ -154,7 +155,32 @@ We have adapted and extended parts of their codebase and finetuned the model for
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+
+
 ---
+
+## 📚 Citation
+
+If you use CryoNet.Refine in your research, please cite our paper:
+
+```bibtex
+@inproceedings{huang2026cryonet,
+  title={CryoNet.Refine: A One-step Diffusion Model for Rapid Refinement of Structural Models with Cryo-EM Density Map Restraints},
+  author={Huang, Fuyao and Yu, Xiaozhu and Xu, Kui and Zhang, Qiangfeng Cliff},
+  booktitle={International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=NwzY2yhlme}
+}
+```
+
+**Authors**: Fuyao Huang\*, Xiaozhu Yu\*, Kui Xu#, Qiangfeng Cliff Zhang#  
+**Paper**: [OpenReview](https://openreview.net/forum?id=NwzY2yhlme) | [PDF](https://openreview.net/pdf?id=NwzY2yhlme)
+
+**Keywords**: Protein structure refinement; Cryo-electron microscopy; Deep learning; Density-guided refinement; Geometric restraints; Diffusion model
+
+---
+
+
 
 ## 🤝 Contributing
 
