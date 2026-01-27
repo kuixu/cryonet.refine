@@ -35,14 +35,73 @@ from CryoNetRefine.libs.density.density import DensityInfo
 from CryoNetRefine.model.model import CryoNetRefineModel
 from CryoNetRefine.model.engine import Engine, RefineArgs, set_seed
 from CryoNetRefine.data.write.utils import write_refined_structure
+import urllib.request
 warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize them.*")
+
+
+def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
+    """
+    Ensure checkpoint file exists, download if necessary.
+    
+    Args:
+        checkpoint: Path to checkpoint file, or None to use default
+    Returns:
+        Path to checkpoint file
+    """
+    # Determine checkpoint path
+    if checkpoint is None:
+        # Use default location in params directory
+        params_dir = Path(__file__).resolve().parent / "params"
+        checkpoint_path = params_dir / "cryonet.refine_model_checkpoint_best26.pt"
+ 
+    else:
+        checkpoint_path = Path(checkpoint)
+    
+    # Check if checkpoint exists and is not empty
+    if not checkpoint_path.exists() or checkpoint_path.stat().st_size == 0:
+        click.echo(f"Checkpoint not found or empty. Try to download from {download_url}...")
+        # Create params directory if it doesn't exist
+        params_dir = Path(__file__).resolve().parent / "params"
+        params_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check if downloaded checkpoint already exists in params directory
+        download_url = "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/CryoNet.Refine_model.pt"
+        downloaded_checkpoint = params_dir / "CryoNet.Refine_model.pt"
+        
+        # If the downloaded checkpoint already exists and is not empty, use it
+        if downloaded_checkpoint.exists() and downloaded_checkpoint.stat().st_size > 0:
+            click.echo(f"Found existing downloaded checkpoint in params directory: {downloaded_checkpoint}")
+            checkpoint_path = downloaded_checkpoint
+        else:
+            # Download checkpoint from URL
+            click.echo(f"Downloading checkpoint from {download_url}...")
+            try:
+                # Download with progress bar
+                response = urllib.request.urlopen(download_url)
+                total_size = int(response.headers.get('Content-Length', 0))
+                
+                with open(downloaded_checkpoint, 'wb') as f:
+                    with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc="Downloading checkpoint") as pbar:
+                        while True:
+                            chunk = response.read(8192)  # 8KB chunks
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            pbar.update(len(chunk))
+                
+                click.echo(f"Downloaded checkpoint to {downloaded_checkpoint}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to download checkpoint: {e}")
+            
+            checkpoint_path = downloaded_checkpoint
+    
+    return checkpoint_path
 
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
 @click.option("--out_suffix", type=str, help="Output suffix", default="refine")
 @click.option("--out_dir", type=click.Path(exists=False), help="Output directory", default="./refine_results")
-@click.option("--cache", type=click.Path(exists=False), help="Cache directory")
-@click.option("--checkpoint", type=click.Path(exists=True), help="Model checkpoint", default=None)
+@click.option("--checkpoint", type=click.Path(exists=False), help="Model checkpoint", default=None)
 @click.option("--seed", type=int, help="Random seed", default=11)
 @click.option("--target_density", multiple=True, type=click.Path(exists=True), help="Target density map (.mrc file)", default=None)
 @click.option("--resolution", multiple=True, type=float, help="Resolution for density map operations", default=None)
@@ -66,7 +125,6 @@ warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize 
 def refine(
     data: str,
     out_dir: str,
-    cache: str,
     checkpoint: Optional[str] = None,
     out_suffix: str = "refine",
     seed: Optional[int] = 11,
@@ -120,10 +178,9 @@ def refine(
     # Setup model parameters
     diffusion_params = DiffusionParams(gamma_0=gamma_0, max_norm_sigmas_value=max_norm_sigmas_value)
     pairformer_args = PairformerArgs()
-    # Load model
-    if checkpoint is None:
-        checkpoint = cache / "cryonet.refine_model_checkpoint_best26.pt"
-
+    
+    # Ensure checkpoint exists, download if necessary
+    checkpoint = ensure_checkpoint(checkpoint)
     data_dir = str(processed.template_dir)
     # Try loading directly to GPU if available
     device = "cuda" if torch.cuda.is_available() else "cpu"

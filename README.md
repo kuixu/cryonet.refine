@@ -1,12 +1,71 @@
-## CryoNet.Refine
+# CryoNet.Refine
+
+<div align="center">
+
+**AI-Driven Real-Space Refinement for Cryo-EM Structures**
+
+[![Paper](https://img.shields.io/badge/Paper-ICLR%202026-blue)](https://openreview.net/forum?id=NwzY2yhlme)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+</div>
+
+---
+
+## 📖 Overview
+
 
 **CryoNet.Refine**, a new AI-driven real-space refinement framework for proteins, DNA, RNA, and their complexes. CryoNet.Refine employs a **one-step diffusion model** that tightly integrates experimental density information with stereochemical and physical constraints, enabling rapid convergence to structures that simultaneously exhibit high model–map correlation and model geometric metrics. Across comprehensive benchmarks, CryoNet.Refine delivers **substantial improvements** over traditional refinement methods in both model–map correlation and model geometric metrics, while achieving significantly lower computational cost. By providing an automated, scalable, and robust refinement pipeline, CryoNet.Refine represents an important step toward next-generation cryo-EM model refinement and broadens the applicability of AI-assisted structural biology.
 
 ---
 
-## 1. Installation
+## 🎯 Key Features
 
-### 1.1 Create Conda environment
+- ⚡ **Fast Convergence**: One-step diffusion model enables rapid refinement
+- 🎯 **High Accuracy**: Superior model–map correlation and geometric metrics compared to Phenix.real_space_refine
+- 🔧 **Automated Pipeline**: Eliminates the need for extensive manual tuning
+- 💰 **Cost-Effective**: Significantly lower computational cost than traditional refinement pipelines
+- 🧬 **Universal**: Works with proteins, DNA, RNA, and their complexes
+
+---
+
+## 🖼️ Framework Overview
+
+### Model Architecture
+<div align="center">
+  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine_framework.png" alt="CryoNet.Refine Framework" width="90%">
+</div>
+
+### Refinement Process
+<div align="center">
+  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine.gif" alt="Refinement Process" width="70%">
+</div>
+
+---
+
+## 📚 Citation
+
+If you use CryoNet.Refine in your research, please cite our paper:
+
+```bibtex
+@inproceedings{huang2026cryonet,
+  title={CryoNet.Refine: A One-step Diffusion Model for Rapid Refinement of Structural Models with Cryo-EM Density Map Restraints},
+  author={Huang, Fuyao and Yu, Xiaozhu and Xu, Kui and Zhang, Qiangfeng Cliff},
+  booktitle={International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=NwzY2yhlme}
+}
+```
+
+**Authors**: Fuyao Huang, Xiaozhu Yu, Kui Xu, Qiangfeng Cliff Zhang  
+**Paper**: [OpenReview](https://openreview.net/forum?id=NwzY2yhlme) | [PDF](https://openreview.net/pdf?id=NwzY2yhlme)
+
+**Keywords**: Protein structure refinement; Cryo-electron microscopy; Deep learning; Density-guided refinement; Geometric restraints; Diffusion model
+
+---
+
+## 🚀 Installation
+
+### 1.1 Create Conda Environment
 
 From the project root (`cryonet.refine`):
 
@@ -23,10 +82,10 @@ Use the official PyTorch CUDA 12.1 wheels:
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
 
-For users in China, you can alternatively use the Aliyun mirror (example):
+For users in China, you can alternatively use the Aliyun mirror:
 
 ```bash
-# pip install torch==2.5.1 -f https://mirrors.aliyun.com/pytorch-wheels/cu12
+pip install torch==2.5.1 -f https://mirrors.aliyun.com/pytorch-wheels/cu12
 ```
 
 ### 1.3 Install cctbx chem_data
@@ -42,7 +101,9 @@ Make sure this is done inside the `cryonet.refine` conda environment.
 
 ---
 
-## 2. Example Usage
+## 💻 Usage
+
+### Quick Start
 
 From the project root (`cryonet.refine`), run:
 
@@ -50,7 +111,7 @@ From the project root (`cryonet.refine`), run:
 sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 /output
 ```
 
-Arguments:
+### Arguments
 
 - `./examples/6ksw_af3.cif` – Input model (PDB/mmCIF) to be refined
 - `./examples/6ksw.mrc` – Input cryo-EM density map
@@ -59,21 +120,27 @@ Arguments:
 
 The script will run the full refinement pipeline and save refined structures and metrics into `/output`.
 
----
-
-## 3. Project Structure
-
-- `CryoNetRefine/` – Core library
-  - `libs/` – Geometry, protein representation, density utilities
-  - `model/` – Network architecture and refinement engine
-  - `data/` – Feature generation, IO, and preprocessing
-- `examples/` – Example input structure and map
-- `run.sh` – Convenience script for running refinement
-- `cryonet.refine_env.yml` – Conda environment specification
 
 ---
 
-## 4. Acknowledgements
+## 📁 Project Structure
+
+```
+cryonet.refine/
+├── CryoNetRefine/          # Core library
+│   ├── libs/               # Geometry, protein representation, density utilities
+│   ├── model/              # Network architecture and refinement engine
+│   └── data/               # Feature generation, IO, and preprocessing
+├── examples/               # Example input structure and map
+├── params/                 # Model checkpoints (auto-downloaded if missing)
+├── run.sh                  # Convenience script for running refinement
+├── main.py                 # Main refinement script
+└── cryonet.refine_env.yml  # Conda environment specification
+```
+
+---
+
+## 🙏 Acknowledgements
 
 CryoNet.Refine borrows code from the **Boltz** project:
 
@@ -81,3 +148,22 @@ Repository: `https://github.com/jwohlwend/boltz.git`
 
 We have adapted and extended parts of their codebase and finetuned the model for our specific refinement setting. We gratefully acknowledge the Boltz authors for making their work available.
 
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+
+<div align="center">
+
+**Made with ❤️ by the CryoNet.Refine Team**
+
+</div>
