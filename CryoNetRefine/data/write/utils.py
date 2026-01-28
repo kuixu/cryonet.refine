@@ -176,7 +176,6 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
     if crop_type == "molecule_aware":
         crop_meta = feats["crop_metadata"]
         seq_dict = crop_meta["sequences"]  # {asym_id: [local_token_pos, ...]}
-
         # Token-level info for this crop (already cropped)
         token_mask = feats["token_pad_mask"].squeeze(0).bool()         # [N_crop_tokens]
         asym_ids_all = feats["asym_id"].squeeze(0)[token_mask]         # [N_crop_tokens]
@@ -254,8 +253,8 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
                     + atom_offset
                 )
                 # Renumber residue index to be local within this chain
-                res["res_idx"] = local_idx
-
+                # res["res_idx"] = local_idx
+                res["res_idx"] = orig_res["res_idx"]
                 crop_residues_list.append(res)
 
                 atom_offset += orig_atom_num

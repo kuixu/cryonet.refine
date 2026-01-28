@@ -18,7 +18,10 @@ if __name__ == "__main__":
         os.environ['PYTHONPATH'] = project_root
     elif project_root not in os.environ['PYTHONPATH']:
         os.environ['PYTHONPATH'] = f"{project_root}:{os.environ['PYTHONPATH']}"
-
+import logging
+import traceback
+from datetime import datetime, timedelta
+import wandb
 import click,time, warnings
 from typing import List
 from tqdm import tqdm
@@ -71,12 +74,63 @@ def setup_ddp():
     
     return rank, world_size, local_rank
 
-
 def cleanup_ddp():
     """Cleanup DDP."""
     if dist.is_initialized():
         dist.destroy_process_group()
 
+# 设置每个 rank 的独立日志文件
+def setup_rank_logging(rank, out_dir):
+    """为每个 rank 设置独立的日志文件"""
+    log_dir = Path(out_dir) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = log_dir / f"rank_{rank}.log"
+    
+    # 创建 logger
+    logger = logging.getLogger(f"rank_{rank}")
+    logger.setLevel(logging.DEBUG)
+    
+    # 文件 handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # 控制台 handler（只输出到文件，避免混乱）
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # 格式
+    formatter = logging.Formatter(
+        f'[Rank {rank}] %(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# 设置全局异常钩子
+def setup_exception_hook(rank, logger):
+    """捕获未处理的异常"""
+    def exception_hook(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        logger.critical(f"Uncaught exception in rank {rank}:\n{error_msg}")
+        
+        # 也输出到 stderr（torchrun 可能会捕获）
+        print(f"[Rank {rank}] CRITICAL ERROR:", file=sys.stderr)
+        print(error_msg, file=sys.stderr)
+        
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+    
+    sys.excepthook = exception_hook
+    
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
 @click.option("--map_db_path", type=click.Path(exists=True))
@@ -107,6 +161,7 @@ def cleanup_ddp():
 @click.option("--num_epochs", type=int, help="Number of training epochs", default=100)
 @click.option("--epoch_early_stop_patience", type=int, help="Number of epochs without improvement before stopping", default=5)
 @click.option("--resume", type=bool, help="Resume training from checkpoint", default=False)
+@click.option("--file_list", type=click.Path(exists=True), help="File list containing PDB IDs (one per line, without extension)", default=None)
 def train(
     data: str,
     map_db_path: str,
@@ -137,24 +192,76 @@ def train(
     num_epochs: int = 100,
     epoch_early_stop_patience: int = 5,
     resume: Optional[bool] = False,
+    file_list: Optional[str] = None,
 
 ) -> None:
     # Initialize DDP
     rank, world_size, local_rank = setup_ddp()
     is_main_process = rank == 0
+    # 🚀 初始化 wandb（只在主进程）
+    if is_main_process:
+        wandb.init(
+            project="cryonet-refine",  # 修改为你的项目名
+            name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config={
+                'num_epochs': num_epochs,
+                'recycles': recycles,
+                'learning_rate': learning_rate,
+                'den': den,
+                'clash': clash,
+                'rama': rama,
+                'rotamer': rotamer,
+                'bond': bond,
+                'angle': angle,
+                'cbeta': cbeta,
+                'ramaz': ramaz,
+                'max_tokens': max_tokens,
+                'use_global_clash': use_global_clash,
+                'world_size': world_size,
+                'file_list': file_list,
+                'checkpoint': checkpoint,
+                'out_dir': out_dir,
+            }
+        )
+    # 🚀 设置每个 rank 的日志
+    logger = setup_rank_logging(rank, out_dir)
+    setup_exception_hook(rank, logger)
+    
+    logger.info(f"Rank {rank} started (local_rank={local_rank}, world_size={world_size})")
     
     start_time = time.time()
     set_seed(seed + rank)  # Different seed for each rank
-    data = Path(data).expanduser()
-    data_stem = data.stem
-    data: List[Path] = list(data.glob("*.pdb"))
+    data_path = Path(data).expanduser()
+    data_stem = data_path.stem
+    if file_list is not None:
+        # 读取文件列表（每行一个文件名，不包含后缀）
+        file_list_path = Path(file_list).expanduser()
+        with open(file_list_path, 'r') as f:
+            file_names = [line.strip() for line in f if line.strip()]
+        
+        # 筛选匹配的 PDB 文件
+        data: List[Path] = []
+        for file_name in file_names:
+            # 尝试匹配 .pdb 文件
+            pdb_file = data_path / f"{file_name}.pdb"
+            if pdb_file.exists():
+                data.append(pdb_file)
+            else:
+                if is_main_process:
+                    click.echo(f"⚠️  Warning: {pdb_file} not found, skipping")
+        
+        if is_main_process:
+            click.echo(f"📋 Loaded {len(data)} PDB files from list (out of {len(file_names)} requested)")
+    else:
+        # 原始逻辑：加载所有 PDB 文件
+        data: List[Path] = list(data_path.glob("*.pdb"))
+        if is_main_process:
+            click.echo(f"📁 Loaded {len(data)} PDB files from directory")
 
     out_dir = Path(out_dir).expanduser()
     if is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
-    # Synchronize after directory creation
-    if world_size > 1:
-        dist.barrier()
+
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
     # Only main process does preprocessing
     if is_main_process:
@@ -167,8 +274,18 @@ def train(
         )
     # Synchronize after preprocessing
     if world_size > 1:
-        dist.barrier()
-    
+        try:
+            logger.debug(f"Rank {rank}: Waiting at barrier...")
+            # dist.barrier(timeout=timedelta(seconds=600))  # 10分钟超时
+            dist.barrier()  # 不设置超时
+            logger.debug(f"Rank {rank}: Barrier passed")
+        except Exception as e:
+            error_msg = f"Rank {rank}: Barrier timeout or error: {e}"
+            logger.critical(error_msg)
+            logger.critical(traceback.format_exc())
+            raise RuntimeError(error_msg) from e
+
+        
     # Load manifest
     manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")
     # Load processed data !!
@@ -191,6 +308,8 @@ def train(
         device = f"cuda:{local_rank}"
     else:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Device: {device}")
+    
     model_module = CryoNetRefineModel.load_from_checkpoint(
         checkpoint,
         strict=False,
@@ -245,6 +364,32 @@ def train(
     # Setup data loader - use original for stability
     data_module.setup("predict")
     dataloader = data_module.predict_dataloader()
+
+    # 🚀 添加数据分布检查
+    if is_main_process:
+        click.echo(f"📊 Data distribution check:")
+        click.echo(f"  Total samples in manifest: {len(manifest.records)}")
+        click.echo(f"  Dataloader length: {len(dataloader)}")
+
+    # 检查每个 rank 的数据量
+    if world_size > 1:
+        rank_data_count = len(dataloader)
+        # 收集所有 rank 的数据量
+        data_counts = [torch.tensor([0], device=device) for _ in range(world_size)]
+        data_counts[rank] = torch.tensor([rank_data_count], device=device)
+        
+        # 使用 all_gather 收集所有 rank 的数据量
+        gathered_counts = [torch.zeros_like(data_counts[0]) for _ in range(world_size)]
+        dist.all_gather(gathered_counts, data_counts[rank])
+        
+        if is_main_process:
+            click.echo(f"  Data per rank: {[c.item() for c in gathered_counts]}")
+            
+            # 检查是否有 rank 没有数据
+            if any(c.item() == 0 for c in gathered_counts):
+                click.echo(f"  ⚠️  WARNING: Some ranks have no data!")
+                click.echo(f"  This may cause synchronization issues.")
+    
     # ============ training logic ============
     start_epoch = 0
     epoch_history = []
@@ -370,7 +515,6 @@ def train(
         epoch_losses = {
             'total_loss': [],
             'CC': [],
-            'geometric': [],
             'rama': [],
             'rotamer': [],
             'bond': [],
@@ -380,86 +524,195 @@ def train(
             'clash': []
         }
         epoch_start_time = time.time()
-        
-
-        # Perform refinement for each structure
         dataloader_iter = tqdm(dataloader, desc=f"Refining structures (Rank {rank})") if is_main_process else dataloader
         
-        # Perform refinement for each structure
         for batch_idx, batch in enumerate(dataloader_iter):
-            record = batch["record"][0]
-            record_id = record.id
-            parts = record_id.split("_")
-            pdb_id = parts[2] 
-            resolution = resolu_dict.get(pdb_id, 0.0)
-            target_density = f'{map_db_path}/{record_id}.mrc'
+            try:
+                # logger.info(f"Rank {rank}: Processing batch {batch_idx}")
+                
+                # 检查 batch 是否为空
+                if batch is None or len(batch) == 0:
+                    logger.warning(f"Rank {rank}: Empty batch at index {batch_idx}")
+                    continue
+                
+                record = batch["record"][0]
+                record_id = record.id
+                logger.debug(f"Rank {rank}: Record ID: {record_id}")
+                
+                parts = record_id.split("_")
+                pdb_id = parts[2] 
+                resolution = resolu_dict.get(pdb_id, 3.0)
+                target_density = f'{map_db_path}/{record_id}.mrc'
 
-            if is_main_process:
-                click.echo(f"\nProcessing batch {batch_idx}")
-            if den == 0.0:
-                target_density = None
-                target_density_obj = None
-                resolution = None
-            else:
-                assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
-                target_density_obj = [DensityInfo(mrc_path=target_density, resolution=resolution, datatype="torch", device=device)]
-            refine_args = RefineArgs()
-            refine_args.data_dir = data_dir
-            refine_args.num_recycles = recycles
-            refine_args.weight_dict["clash"] = clash
-            refine_args.weight_dict["den"] = den
-            refine_args.weight_dict["rama"] = rama
-            refine_args.weight_dict["rotamer"] = rotamer
-            refine_args.weight_dict["bond"] = bond
-            refine_args.weight_dict["angle"] = angle
-            refine_args.weight_dict["cbeta"] = cbeta
-            refine_args.weight_dict["ramaz"] = ramaz
-            refine_args.learning_rate = learning_rate
-            refine_args.use_global_clash = use_global_clash
-            refiner = Engine(
-                model_module, 
-                refine_args, 
-                model_args,
-                device, 
-                target_density_obj, 
-                max_tokens=max_tokens,
-                enable_cropping=enable_cropping,
-                pdb_id=pdb_id,  
-            )
-            refined_coords, _ = refiner.refine(batch, target_density_obj, processed.template_dir, out_dir, cond_early_stop=cond_early_stop)
-            # Get best results info from refiner
-            best_iteration = getattr(refiner, 'best_iteration', None)
-            best_loss = getattr(refiner, 'best_loss', None)
-            best_cc = getattr(refiner, 'best_cc', None)
-            # Convert Tensor to Python scalar for JSON serialization
-            if isinstance(best_loss, torch.Tensor):
-                best_loss = best_loss.item()
-            if isinstance(best_cc, torch.Tensor):
-                best_cc = best_cc.item()
-            epoch_losses['total_loss'].append(best_loss)
-            epoch_losses['CC'].append(best_cc)
-            
-            # Only main process saves structures
-            if is_main_process:
-                output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                write_refined_structure(batch, refined_coords, data_dir, output_path)
-                click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
-                click.echo(f"Refined structure {batch_idx} saved to {output_path}")
-            
-            if 'refiner' in locals():
-                refiner.clear_caches()
-            if 'refiner' in locals() and hasattr(refiner, 'geometric_adapter'):
-                cache_info = refiner.geometric_adapter.get_cache_info()
                 if is_main_process:
-                    click.echo(f"Structure cache info: {cache_info}")
-            
-            if is_main_process:
-                click.echo("Refinement completed!")
-                end_time = time.time()
-                click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
+                    click.echo(f"\nProcessing batch {batch_idx}")
+                # 检查文件是否存在
+                if den != 0.0:
+                    if not os.path.exists(target_density):
+                        error_msg = f"Rank {rank}: Target density file not found: {target_density}"
+                        logger.error(error_msg)
+                        raise FileNotFoundError(error_msg)
+                
+                if den == 0.0:
+                    target_density = None
+                    target_density_obj = None
+                    resolution = None
+                else:
+                    assert target_density is not None and resolution is not None, "Target density and resolution must be provided"
+                    try:
+                        target_density_obj = [DensityInfo(mrc_path=target_density, resolution=resolution, datatype="torch", device=device)]
+                        logger.debug(f"Rank {rank}: DensityInfo created successfully")
+                    except Exception as e:
+                        error_msg = f"Rank {rank}: Failed to create DensityInfo: {e}"
+                        logger.error(error_msg)
+                        logger.error(traceback.format_exc())
+                        raise
+                refine_args = RefineArgs()
+                refine_args.data_dir = data_dir
+                refine_args.num_recycles = recycles
+                refine_args.weight_dict["clash"] = clash
+                refine_args.weight_dict["den"] = den
+                refine_args.weight_dict["rama"] = rama
+                refine_args.weight_dict["rotamer"] = rotamer
+                refine_args.weight_dict["bond"] = bond
+                refine_args.weight_dict["angle"] = angle
+                refine_args.weight_dict["cbeta"] = cbeta
+                refine_args.weight_dict["ramaz"] = ramaz
+                refine_args.learning_rate = learning_rate
+                refine_args.use_global_clash = use_global_clash
+                
+                logger.debug(f"Rank {rank}: Creating Engine for {record_id}")
+                try:
+                    refiner = Engine(
+                        model_module, 
+                        refine_args, 
+                        model_args,
+                        device, 
+                        target_density_obj, 
+                        max_tokens=max_tokens,
+                        enable_cropping=enable_cropping,
+                        pdb_id=record_id,  
+                    )
+                    logger.debug(f"Rank {rank}: Engine created successfully")
+                except Exception as e:
+                    error_msg = f"Rank {rank}: Failed to create Engine: {e}"
+                    logger.error(error_msg)
+                    logger.error(traceback.format_exc())
+                    raise
+                
+                logger.info(f"Rank {rank}: Starting refinement for {record_id}")
+                try:
+                    refined_coords, _ = refiner.refine(
+                        batch, target_density_obj, processed.template_dir, out_dir, cond_early_stop=cond_early_stop
+                    )
+                    logger.info(f"Rank {rank}: Refinement completed for {record_id}")
+                except RuntimeError as e:
+                    # CUDA OOM 错误
+                    if "out of memory" in str(e).lower():
+                        error_msg = f"Rank {rank}: CUDA OOM error for {record_id} at batch {batch_idx}"
+                        logger.error(error_msg)
+                        logger.error(f"Error details: {e}")
+                        logger.error(traceback.format_exc())
+                        # 清理显存
+                        torch.cuda.empty_cache()
+                        raise RuntimeError(f"OOM in rank {rank}: {error_msg}") from e
+                    else:
+                        raise
+                except Exception as e:
+                    error_msg = f"Rank {rank}: Refinement failed for {record_id} at batch {batch_idx}: {e}"
+                    logger.error(error_msg)
+                    logger.error(traceback.format_exc())
+                    raise
+                
+                # Get best results info from refiner
+                best_iteration = getattr(refiner, 'best_iteration', None)
+                best_loss = getattr(refiner, 'best_loss', None)
+                best_cc = getattr(refiner, 'best_cc', None)
+                best_loss_dict = getattr(refiner, 'best_loss_dict', {})
 
+                # Convert Tensor to Python scalar for JSON serialization
+                if isinstance(best_loss, torch.Tensor):
+                    best_loss = best_loss.item()
+                if isinstance(best_cc, torch.Tensor):
+                    best_cc = best_cc.item()
 
+                epoch_losses['total_loss'].append(best_loss)
+                epoch_losses['CC'].append(best_cc)
+
+                # 🚀 统计所有其他损失值
+                for key in ['rama', 'rotamer', 'bond', 'angle', 'cbeta', 'ramaz', 'clash']:
+                    if key in best_loss_dict:
+                        value = best_loss_dict[key]
+                        if isinstance(value, torch.Tensor):
+                            value = value.item()
+                        epoch_losses[key].append(value)
+                logger.info(f"Rank {rank}: Best loss={best_loss:.6f}, CC={best_cc:.6f} for {record_id}")
+                
+                # Only main process saves structures
+                if is_main_process:
+                    try:
+                        output_path = out_dir / f"{record_id}_{out_suffix}.cif"
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        # write_refined_structure(batch, refined_coords, data_dir, output_path)
+                        click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
+                        click.echo(f"Refined structure {batch_idx} saved to {output_path}")
+                        logger.info(f"Rank {rank}: Structure saved to {output_path}")
+                    except Exception as e:
+                        error_msg = f"Rank {rank}: Failed to save structure: {e}"
+                        logger.error(error_msg)
+                        logger.error(traceback.format_exc())
+                        raise
+                
+                if 'refiner' in locals():
+                    refiner.clear_caches()
+                if 'refiner' in locals() and hasattr(refiner, 'geometric_adapter'):
+                    cache_info = refiner.geometric_adapter.get_cache_info()
+                
+                if is_main_process:
+                    end_time = time.time()
+                    click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
+            except Exception as e:
+                # 捕获所有异常并详细记录
+                error_type = type(e).__name__
+                error_msg = str(e)
+                full_traceback = traceback.format_exc()
+                
+                logger.critical(f"Rank {rank}: Exception in batch {batch_idx}")
+                logger.critical(f"  Error type: {error_type}")
+                logger.critical(f"  Error message: {error_msg}")
+                logger.critical(f"  Full traceback:\n{full_traceback}")
+                
+                # 如果是 CUDA 错误，记录显存信息
+                if torch.cuda.is_available():
+                    try:
+                        mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
+                        mem_reserved = torch.cuda.memory_reserved(device) / 1024**3
+                        logger.critical(f"  GPU memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB")
+                    except:
+                        pass
+                
+                # 输出到 stderr（torchrun 可能会捕获）
+                print(f"\n{'='*80}", file=sys.stderr)
+                print(f"[Rank {rank}] CRITICAL ERROR in batch {batch_idx}", file=sys.stderr)
+                print(f"Error type: {error_type}", file=sys.stderr)
+                print(f"Error message: {error_msg}", file=sys.stderr)
+                print(f"Full traceback:", file=sys.stderr)
+                print(full_traceback, file=sys.stderr)
+                print(f"{'='*80}\n", file=sys.stderr)
+                
+                # 在分布式训练中，一个 rank 的错误会导致所有 rank 失败
+                # 可以选择继续（跳过这个 batch）或终止训练
+                if world_size > 1:
+                    # 通知其他 rank 发生了错误
+                    try:
+                        error_flag = torch.tensor([1], device=device)
+                        dist.all_reduce(error_flag, op=dist.ReduceOp.MAX)
+                    except:
+                        pass
+                
+                # 重新抛出异常以终止训练
+                raise        
+        
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         
@@ -476,8 +729,19 @@ def train(
         if is_main_process:
             # 即使没有样本，也记录 epoch 信息
             if len(epoch_losses['total_loss']) > 0:
+                # 🚀 计算所有损失项的平均值
                 avg_total_loss = sum(epoch_losses['total_loss']) / len(epoch_losses['total_loss'])
                 avg_cc = sum(epoch_losses['CC']) / len(epoch_losses['CC'])
+                
+                # 🚀 计算其他损失项的平均值
+                avg_rama = sum(epoch_losses['rama']) / len(epoch_losses['rama']) if epoch_losses['rama'] else 0.0
+                avg_rotamer = sum(epoch_losses['rotamer']) / len(epoch_losses['rotamer']) if epoch_losses['rotamer'] else 0.0
+                avg_bond = sum(epoch_losses['bond']) / len(epoch_losses['bond']) if epoch_losses['bond'] else 0.0
+                avg_angle = sum(epoch_losses['angle']) / len(epoch_losses['angle']) if epoch_losses['angle'] else 0.0
+                avg_cbeta = sum(epoch_losses['cbeta']) / len(epoch_losses['cbeta']) if epoch_losses['cbeta'] else 0.0
+                avg_ramaz = sum(epoch_losses['ramaz']) / len(epoch_losses['ramaz']) if epoch_losses['ramaz'] else 0.0
+                avg_clash = sum(epoch_losses['clash']) / len(epoch_losses['clash']) if epoch_losses['clash'] else 0.0
+                
                 # Ensure Python scalars for JSON serialization
                 if isinstance(avg_total_loss, torch.Tensor):
                     avg_total_loss = avg_total_loss.item()
@@ -488,12 +752,43 @@ def train(
                 click.echo(f"  Samples processed by rank 0: {len(epoch_losses['total_loss'])}")
                 click.echo(f"  Average Total Loss: {avg_total_loss:.6f}")
                 click.echo(f"  Average CC: {avg_cc:.6f}")
+                click.echo(f"  Average Rama: {avg_rama:.6f}")
+                click.echo(f"  Average Rotamer: {avg_rotamer:.6f}")
+                click.echo(f"  Average Bond: {avg_bond:.6f}")
+                click.echo(f"  Average Angle: {avg_angle:.6f}")
+                click.echo(f"  Average Cbeta: {avg_cbeta:.6f}")
+                click.echo(f"  Average Ramaz: {avg_ramaz:.6f}")
+                click.echo(f"  Average Clash: {avg_clash:.6f}")
+                
+                # 🚀 使用 wandb 记录所有损失项
+                if is_main_process:
+                    wandb.log({
+                        'epoch': epoch + 1,
+                        'train/avg_total_loss': avg_total_loss,
+                        'train/avg_cc': avg_cc,
+                        'train/avg_rama': avg_rama,
+                        'train/avg_rotamer': avg_rotamer,
+                        'train/avg_bond': avg_bond,
+                        'train/avg_angle': avg_angle,
+                        'train/avg_cbeta': avg_cbeta,
+                        'train/avg_ramaz': avg_ramaz,
+                        'train/avg_clash': avg_clash,
+                        'train/num_cases': len(epoch_losses['total_loss']),
+                        'train/epoch_duration': epoch_duration,
+                    })
                 
                 # 保存 epoch 统计信息
                 epoch_stats = {
                     'epoch': epoch + 1,
                     'avg_total_loss': float(avg_total_loss),
                     'avg_cc': float(avg_cc),
+                    'avg_rama': float(avg_rama),
+                    'avg_rotamer': float(avg_rotamer),
+                    'avg_bond': float(avg_bond),
+                    'avg_angle': float(avg_angle),
+                    'avg_cbeta': float(avg_cbeta),
+                    'avg_ramaz': float(avg_ramaz),
+                    'avg_clash': float(avg_clash),
                     'num_cases': len(epoch_losses['total_loss']),
                     'duration': float(epoch_duration)
                 }
@@ -502,15 +797,29 @@ def train(
                 click.echo(f"📊 Epoch {epoch + 1} Statistics (Rank 0):")
                 click.echo(f"  ⚠️  No samples processed by rank 0 in this epoch")
                 
+                # 🚀 wandb 记录（无数据）
+                if is_main_process:
+                    wandb.log({
+                        'epoch': epoch + 1,
+                        'train/num_cases': 0,
+                        'train/epoch_duration': epoch_duration,
+                    })
+                
                 # 保存 epoch 统计信息（标记为无数据）
                 epoch_stats = {
                     'epoch': epoch + 1,
                     'avg_total_loss': None,
                     'avg_cc': None,
+                    'avg_rama': None,
+                    'avg_rotamer': None,
+                    'avg_bond': None,
+                    'avg_angle': None,
+                    'avg_cbeta': None,
+                    'avg_ramaz': None,
+                    'avg_clash': None,
                     'num_cases': 0,
                     'duration': epoch_duration
                 }
-            
             epoch_history.append(epoch_stats)
             
             # 每个 epoch 结束后立即保存训练历史（避免丢失）
@@ -552,7 +861,16 @@ def train(
         
         # Synchronize before continuing to next epoch
         if world_size > 1:
-            dist.barrier()
+            try:
+                logger.debug(f"Rank {rank}: Waiting at barrier...")
+                # dist.barrier(timeout=timedelta(seconds=600))  # 10分钟超时
+                dist.barrier()  # 不设置超时
+                logger.debug(f"Rank {rank}: Barrier passed")
+            except Exception as e:
+                error_msg = f"Rank {rank}: Barrier timeout or error: {e}"
+                logger.critical(error_msg)
+                logger.critical(traceback.format_exc())
+                raise RuntimeError(error_msg) from e
         
         # ============ 早停策略检查 ============
         # 只在 rank 0 做早停判断，然后 broadcast 给所有 rank
@@ -667,7 +985,8 @@ def train(
             if is_main_process:
                 click.echo(f"{'='*80}\n")
 
-
+    if is_main_process:
+        wandb.finish()
     # ============ 所有 Epoch 结束统计 ============
     if is_main_process:
         click.echo(f"\n{'='*80}")

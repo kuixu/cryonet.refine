@@ -1072,11 +1072,11 @@ class GeoMetric:
                     compute_gradients=True
                 )
                 #--------debug
-                # bond_deviations = energies_sites.bond_deviations()
-                # angle_deviations = energies_sites.angle_deviations()
-                # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
-                # angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
-                # print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
+                bond_deviations = energies_sites.bond_deviations()
+                angle_deviations = energies_sites.angle_deviations()
+                bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
+                angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
+                print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
                 # 🚀 Cache grm, sites_cart, perm_tensor
                 self._rmsd_grm_cache = grm
                 self._rmsd_sites_cart_cache = sites_cart

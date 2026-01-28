@@ -59,7 +59,6 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
     
     # Check if checkpoint exists and is not empty
     if not checkpoint_path.exists() or checkpoint_path.stat().st_size == 0:
-        click.echo(f"Checkpoint not found or empty. Try to download from {download_url}...")
         # Create params directory if it doesn't exist
         params_dir = Path(__file__).resolve().parent / "params"
         params_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +66,7 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
         # Check if downloaded checkpoint already exists in params directory
         download_url = "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/CryoNet.Refine_model.pt"
         downloaded_checkpoint = params_dir / "CryoNet.Refine_model.pt"
+        click.echo(f"Checkpoint not found or empty. Try to download from {download_url}...")
         
         # If the downloaded checkpoint already exists and is not empty, use it
         if downloaded_checkpoint.exists() and downloaded_checkpoint.stat().st_size > 0:

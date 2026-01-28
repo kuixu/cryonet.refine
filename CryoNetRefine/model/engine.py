@@ -256,9 +256,9 @@ class Engine:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        # if out_dir:
-        #     output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
-        #     write_refined_structure(batch, refined_coords, data_dir, output_path)
+        if out_dir:
+            output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
+            write_refined_structure(batch, refined_coords, data_dir, output_path)
         return {
             "total_loss": total_loss.item(),
             "loss_dic_list": loss_dict_list,
@@ -613,8 +613,17 @@ class Engine:
             )
         del s, z, s_inputs, diffusion_conditioning
         predicted_coords = struct_out["sample_atom_coords"]
- 
-        # update final global refined coords
+        if iteration == 0:
+            self.crop_initial_cc[crop_idx] = struct_out["initial_cc"]
+        
+        # if self.refine_args.weight_dict["den"] > 0.0 and self.crop_initial_cc[crop_idx] <= 0:
+        #     web_log_path = Path(out_dir) / f"{self.pdb_id}_web_log.txt"
+        #     with web_log_path.open("a") as f:
+        #         f.write(
+        #             "Warning: initial CC <= 0. "
+        #             "Check if input structure and density map are aligned.\n"
+        #         )
+        #     raise ValueError("Initial CC <= 0. Please check alignment of structure and density map.")
         crop_predicted_coords_global = predicted_coords[crop_batch['atom_pad_mask']]  # [N_crop_atoms, 3]
         crop_atom_mask_device = crop_atom_mask.to(self.device)  # [N_atoms]
         crop_atom_indices = torch.where(crop_atom_mask_device)[0]  # [N_crop_atoms] - indices in global tensor
@@ -631,7 +640,6 @@ class Engine:
             src=src_tensor
         )
 
-
         cc, total_loss, loss_dict , time_loss_dict = refine_loss(
             crop_idx,
             predicted_coords,
@@ -644,9 +652,6 @@ class Engine:
             final_global_refined_coords=self.final_global_refined_coords,
             global_feats=self.global_feats
         )
-
-        if iteration == 0:
-            self.crop_initial_cc[crop_idx] = struct_out["initial_cc"]
 
         # Debug: Print crop loss info
         init_cc = self.crop_initial_cc.get(crop_idx, "N/A")
@@ -691,7 +696,8 @@ class Engine:
             "atom_pad_mask": batch["atom_pad_mask"].to(self.device),
             "ref_element": batch["ref_element"].to(self.device),
             "atom_to_token": batch["atom_to_token"].to(self.device),
-            "residue_index": batch["residue_index"].to(self.device)
+            "residue_index": batch["residue_index"].to(self.device),
+            "template_atom_present_mask": batch["template_atom_present_mask"].to(self.device),
         }
         # Initialize best results tracking
         best_coords = None
@@ -778,6 +784,8 @@ class Engine:
                 self.cached_crop_batches = None
                 self.cached_crop_info = None
                 raise ValueError("No cropping method selected")
+        
+        
         for iteration in range(self.refine_args.num_recycles):
             # Perform refinement step
             # start_time = time.time()

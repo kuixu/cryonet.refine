@@ -338,6 +338,7 @@ class AtomDiffusion(Module):
                 )
             else:
                 initial_cc = 0.0
+            
 
             for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
 

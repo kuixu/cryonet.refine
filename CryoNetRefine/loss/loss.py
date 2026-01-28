@@ -82,7 +82,9 @@ def probe_style_clash_loss(
     B, N, _ = predicted_coords.shape
     assert B == 1, "Expected batch size = 1"
 
-    atom_mask = feats["atom_pad_mask"].bool()               # [1, N]
+    atom_pad_mask = feats["atom_pad_mask"].bool()               # [1, N]
+    template_atom_present_mask = feats["template_atom_present_mask"].bool().squeeze(0) # [N]
+    atom_mask = atom_pad_mask & template_atom_present_mask
     coords = predicted_coords                               # [1, N, 3]
 
     ref_element = feats["ref_element"].float().to(device)   # [1, N, E]
@@ -95,7 +97,6 @@ def probe_style_clash_loss(
         const.vdw_radii, dtype=torch.float32, device=device
     )
     atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)  # [1, N]
-
     # If N is large, process pairwise distances in chunks to save memory
     if N > chunk_size:
         # Batch computation to avoid allocating a [1, N, N] matrix in memory at once
@@ -310,8 +311,6 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
     else:
         loss_dict["clash"] = torch.zeros((), device=device)
         time_loss_dict["clash"] = 0.0
-      
-
 
     os.system(f"rm {output_path}")
     return loss_dict, time_loss_dict
