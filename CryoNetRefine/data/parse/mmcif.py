@@ -650,8 +650,8 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
     # If sequence is empty or None, extract from structure with gap detection
     use_direct_mapping = False
     seq_to_polymer_map = None
-    
-    if not sequence or len(sequence) == 0:
+    # if not sequence or len(sequence) == 0:
+    if True:
         print(f"Chain {chain_id}: No header sequence, extracting from structure")
         sequence, seq_to_polymer_map = extract_sequence_from_polymer_with_gaps(
             polymer, polymer_type, chain_id
