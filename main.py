@@ -223,7 +223,14 @@ def refine(
     refine_args.weight_dict["ramaz"] = ramaz
     refine_args.learning_rate = learning_rate
     refine_args.use_global_clash = use_global_clash
-    pdb_id = data[0].name.split('.')[0]
+    # pdb_id = data[0].name.split('.')[0]
+    input_name = data[0].name
+    if input_name.endswith(".cif"):
+        pdb_id = input_name[:-4]
+    elif input_name.endswith(".pdb"):
+        pdb_id = input_name[:-4]
+    else:
+        pdb_id = input_name
     refiner = Engine(
         model_module, 
         refine_args, 
