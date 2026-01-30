@@ -121,7 +121,8 @@ def get_mol(ccd: str, mols: dict, moldir: str) -> Mol:
                 mols.set(ccd, mol)
         except (ValueError, KeyError) as e:
             # Skip molecules that cannot be found (e.g., metal ions like MG)
-            print(f"⚠️  Warning: Skipping ligand '{ccd}' - not found in CCD database: {e}")
+            if ccd != "N": # gap token
+                print(f"⚠️  Warning: Skipping ligand '{ccd}' - not found in CCD database: {e}")
             return None
 
     return mol
@@ -485,7 +486,7 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
         orig_idx = gemmi_mol.seqid
         orig_idx = str(orig_idx.num) + str(orig_idx.icode).strip()
     else:
-        orig_idx = None
+        orig_idx = 404
 
     # Remove hydrogens
     ref_mol = AllChem.RemoveHs(ref_mol, sanitize=False)
@@ -1070,7 +1071,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         subchain_map=subchain_map,
         entities=entities,
     )
-
     # Parse chains
     chains: list[ParsedChain] = []
     for raw_chain in structure[0].subchains():
@@ -1370,6 +1370,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                     res.name,
                     res.type,
                     res.idx,
+                    # res.orig_idx,
                     atom_idx,
                     len(res.atoms),
                     atom_center,
@@ -1454,6 +1455,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     # Convert into datatypes
     atoms = np.array(atom_data, dtype=AtomV2)
     bonds = np.array(bond_data, dtype=BondV2)
+    breakpoint()
     residues = np.array(res_data, dtype=Residue)
     chains = np.array(chain_data, dtype=Chain)
     mask = np.ones(len(chain_data), dtype=bool)
@@ -1489,7 +1491,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         ensemble=ensemble,
         coords=coords,
     )
-
     return ParsedStructure(
         data=data,
         info=info,

@@ -256,9 +256,9 @@ class Engine:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        if out_dir:
-            output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
-            write_refined_structure(batch, refined_coords, data_dir, output_path)
+        # if out_dir:
+        #     output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
+        #     write_refined_structure(batch, refined_coords, data_dir, output_path)
         return {
             "total_loss": total_loss.item(),
             "loss_dic_list": loss_dict_list,
