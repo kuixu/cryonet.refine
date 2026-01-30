@@ -64,7 +64,6 @@ def write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path):
         # Load the structure from data_dir
         path = data_dir / f"{record.id}.npz"
         structure: StructureV2 = StructureV2.load(path)
-        
         # Compute chain map with masked removed, to be used later
         chain_map = {}
         for i, mask in enumerate(structure.mask):
@@ -110,7 +109,6 @@ def write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path):
             interfaces=interfaces,
             coords=coords_field,
         )
-        
         # Update chain info
         chain_info = []
         for chain in new_structure.chains:
@@ -342,6 +340,7 @@ def write_refined_structure(batch, refined_coords,data_dir,output_path):
             # Load the structure from data_dir
             path = data_dir / f"{record.id}.npz"
             structure: StructureV2 = StructureV2.load(path)
+
             # Compute chain map with masked removed, to be used later
             chain_map = {}
             for i, mask in enumerate(structure.mask):
@@ -406,7 +405,7 @@ def write_refined_structure(batch, refined_coords,data_dir,output_path):
             # Save the CIF structure
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w") as f:
-                f.write(to_mmcif(new_structure, plddts=None))
+                f.write(to_pdb(new_structure, plddts=None))
         except Exception as e:
             print(f"Error saving CIF structure: {e}")
             import traceback

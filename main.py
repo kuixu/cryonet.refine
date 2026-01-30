@@ -31,6 +31,7 @@ from CryoNetRefine.data.parse.input import (
     BoltzProcessedInput, DiffusionParams, model_args,
     PairformerArgs, check_inputs, process_inputs
 )
+from CryoNetRefine.data.parse.validate import validate_inputs
 from CryoNetRefine.libs.density.density import DensityInfo
 from CryoNetRefine.model.model import CryoNetRefineModel
 from CryoNetRefine.model.engine import Engine, RefineArgs, set_seed
@@ -158,6 +159,7 @@ def refine(
     # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
+    validate_inputs(input_path=data,target_density = target_density, resolution = resolution)
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
     process_inputs(
         data=data,
@@ -210,6 +212,7 @@ def refine(
             target_density_obj = [DensityInfo(mrc_path=target_density[0], resolution=resolution[0], datatype="torch", device=device)]
         else:
             target_density_obj = [DensityInfo(mrc_path=td, resolution=res, datatype="torch", device=device) for td, res in zip(target_density, resolution)]
+    
     refine_args = RefineArgs()
     refine_args.data_dir = data_dir
     refine_args.num_recycles = recycles
@@ -253,8 +256,12 @@ def refine(
     data_module.setup("predict")
     dataloader = data_module.predict_dataloader()
     # Perform refinement for each structure
+    from CryoNetRefine.loss.loss import compute_overall_cc_loss
+    from CryoNetRefine.data.const import atom_weight  # 如果你需要 atom_weights
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx}")
+        coords0 = batch["template_coords"].squeeze(0).squeeze(0)   # [12160, 3]
+        coords0 = coords0.unsqueeze(0)                             # [1, 12160, 3]
         # NOTE:
         # Do NOT move the whole batch to GPU here.
         # Each crop will be moved to GPU individually inside the Engine,
@@ -265,7 +272,7 @@ def refine(
         best_loss = getattr(refiner, 'best_loss', None)
         best_cc = getattr(refiner, 'best_cc', None)
         # Save refined structure (best result)
-        output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
+        output_path = out_dir / f"{pdb_id}_{out_suffix}.pdb"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_refined_structure(batch, refined_coords, data_dir, output_path)
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
