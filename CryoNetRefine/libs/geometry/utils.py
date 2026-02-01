@@ -156,14 +156,20 @@ def calc_dihedral_batch(four_atom_sites_batch):
     cb = v3 - v2
     db = v4 - v3
 
-    cb_norm = cb / torch.norm(cb, dim=1, keepdim=True)
+    cb_norm_val = torch.norm(cb, dim=1, keepdim=True)
+    denom = torch.clamp(cb_norm_val, min=1e-6) + 1e-8
+    cb_norm = cb / denom
+
     v = ab - torch.sum(ab * cb_norm, dim=1, keepdim=True) * cb_norm
     w = db - torch.sum(db * cb_norm, dim=1, keepdim=True) * cb_norm
 
     x = torch.sum(v * w, dim=1)
     y = torch.sum(torch.cross(cb_norm, v, dim=1) * w, dim=1)
 
-    angle = torch.atan2(y, x)  # in radians
+    eps_a = 1e-8
+    x_safe = torch.where(x.abs() < eps_a, torch.full_like(x, eps_a), x)
+    y_safe = torch.where(y.abs() < eps_a, torch.zeros_like(y), y)
+    angle = torch.atan2(y_safe, x_safe)
 
     if angle.shape[0] == 1:
         return angle[0]  # scalar
@@ -204,7 +210,6 @@ def calc_dihedrals(atom_pos):
     
     phis = calc_dihedral_batch(phi_atoms)
     psis = calc_dihedral_batch(psi_atoms)
-    
     return torch.stack((phis, psis), dim=-1)
 
 

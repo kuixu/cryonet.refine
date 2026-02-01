@@ -639,7 +639,6 @@ class Engine:
             index=index_tensor,
             src=src_tensor
         )
-
         cc, total_loss, loss_dict , time_loss_dict = refine_loss(
             crop_idx,
             predicted_coords,

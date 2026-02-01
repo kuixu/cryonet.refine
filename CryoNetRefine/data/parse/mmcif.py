@@ -461,8 +461,7 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
     Then, tries to infer atom ordering using RDKit.
 
     Parameters
-    ----------
-    name: str
+    ---------- 
         The name of the molecule to parse.
     components : dict
         The preprocessed PDB components dictionary.
@@ -1455,7 +1454,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     # Convert into datatypes
     atoms = np.array(atom_data, dtype=AtomV2)
     bonds = np.array(bond_data, dtype=BondV2)
-    breakpoint()
     residues = np.array(res_data, dtype=Residue)
     chains = np.array(chain_data, dtype=Chain)
     mask = np.ones(len(chain_data), dtype=bool)
@@ -1480,7 +1478,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         temperature=temperature,
         pH=ph,
     )
-
     data = StructureV2(
         atoms=atoms,
         bonds=bonds,

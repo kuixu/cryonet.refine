@@ -151,6 +151,8 @@ class GeometricAdapter:
 
         # Get basic tensors
         atom_pad_mask = feats["atom_pad_mask"].squeeze(0).bool()    # [N_atoms]
+        atom_present_mask = feats["template_atom_present_mask"].squeeze(0,1).bool()    # [N_atoms]
+        atom_mask = atom_present_mask & atom_pad_mask
         res_type = feats["res_type"].squeeze(0)                     # [N_tokens, 33]
         
         # Get token indices from res_type (const.tokens ordering)
@@ -221,7 +223,7 @@ class GeometricAdapter:
                 atom_idx_val = atom_idx.item()
                 
                 # Check if this atom is valid
-                if atom_idx_val >= N_atom or not atom_pad_mask[atom_idx_val]:
+                if atom_idx_val >= N_atom or not atom_mask[atom_idx_val]:
                     continue
                 
                 # Map ref_pos to atom14 position
@@ -301,7 +303,6 @@ class GeometricMetricWrapper:
         bond_angle_time = 0 # we removed the bond and angle loss from this file,the new implementation is in the refine_loss.py file(prot + DNA/RNA)
 
         # 4) C-beta deviation
-
         if weights is None or weights.get("cbeta", 1.0) > 0:
             cb = gm.cbeta_dev_batch()
             loss_dict["cbeta"] = cb["cbeta_outliers"].mean()

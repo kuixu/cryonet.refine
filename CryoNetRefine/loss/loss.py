@@ -29,13 +29,15 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weight
         current_atom_coords = predicted_coords[batch_idx]  # [num_atoms, 3]
         # unpad
         pad_masks = feats["atom_pad_mask"].squeeze(0)
-        resolved_mask = feats.get("atom_resolved_mask", pad_masks).squeeze(0)
         # ensure same length
-        L = min(pad_masks.shape[0], resolved_mask.shape[0], current_atom_coords.shape[0])
+        L = min(pad_masks.shape[0], current_atom_coords.shape[0])
         pad_masks = pad_masks[:L]
-        resolved_mask = resolved_mask[:L]
         current_atom_coords = current_atom_coords[:L]
-        atom_mask = pad_masks.bool() & resolved_mask.bool()
+        if feats.get("template_atom_present_mask", None) is not None:
+          present_mask = feats["template_atom_present_mask"].squeeze((0,1))
+          atom_mask = pad_masks.bool() & present_mask.bool()
+        else:
+          atom_mask = pad_masks.bool()
         current_atom_coords = current_atom_coords[atom_mask]
         # atom_weight = 14.0
         atom_weight = atom_weights[atom_mask]
@@ -314,9 +316,6 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
 
     os.system(f"rm {output_path}")
     return loss_dict, time_loss_dict
-
-
-
 
 def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None, final_global_refined_coords=None, global_feats=None):
     device = predicted_coords.device

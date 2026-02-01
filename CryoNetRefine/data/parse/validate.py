@@ -39,10 +39,8 @@ def _mols_dir() -> Path:
 
 
 def _supported_residue_codes() -> set[str]:
-    # 用 data/mols 下的 *.pkl 作为“支持列表”，最贴合你项目实际情况
     mols = _mols_dir()
     supported = {p.stem.upper() for p in mols.glob("*.pkl")}
-    # 解析里会把 MSE 视作 MET（mmcif.py 里有映射），所以这里也认为支持
     supported.add("MSE")
     return supported
 
@@ -79,7 +77,6 @@ def _find_unsupported_residues(st: gemmi.Structure, supported: set[str]) -> List
     for chain in model:
         for res in chain:
             name = res.name.upper()
-            # skip waters (稳妥起见双保险)
             if getattr(res, "is_water", None) and res.is_water():
                 continue
             if name in ("HOH", "WAT"):
@@ -90,11 +87,8 @@ def _find_unsupported_residues(st: gemmi.Structure, supported: set[str]) -> List
 
 
 def _detect_gaps(st: gemmi.Structure) -> GapInfo:
-    """
-    以 residue.seqid.num 的不连续作为 gap 定义（与你 mmcif.py 的 gap 逻辑一致：只看 num，不看 icode）。
-    只在“像 polymer 的残基”上统计（避免 ligand 乱入编号）。
-    """
-    polymer_like = set(const.tokens) | {"MSE"}  # const.tokens 包含 20AA + A/C/G/U + DA/DC/DG/DT + UNK等
+
+    polymer_like = set(const.tokens) | {"MSE"} 
     chain_to_ranges: Dict[str, List[Tuple[int, int]]] = {}
     total_missing = 0
 
@@ -271,7 +265,6 @@ def validate_inputs(
 
         gap = _detect_gaps(st)
         if gap.has_gap:
-            # 合并到总表里（不同文件同名 chain 也会合并；你目前一次只处理一个 input，所以够用）
             for ch, ranges in gap.chain_to_ranges.items():
                 gap_agg.setdefault(ch, []).extend(ranges)
             total_missing += gap.total_missing
@@ -291,7 +284,6 @@ def validate_inputs(
             "Refinement quality may degrade."
         )
 
-    # CC：只取第一个密度图（与 main.py 允许 multiple 的接口兼容）
     cc_val = None
     cc_ok = None
     td_obj: Optional[Sequence[DensityInfo]] = None
