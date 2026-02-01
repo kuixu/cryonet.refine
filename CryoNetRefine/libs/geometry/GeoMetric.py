@@ -13,7 +13,7 @@ from mmtbx.monomer_library import server as mon_lib_server
 from mmtbx.monomer_library import cif_types
 from CryoNetRefine.libs.protein import Protein
 from CryoNetRefine.libs.prot_utils import residue_constants 
-from CryoNetRefine.libs.prot_utils.residue_constants import restype3_to_atoms, index_to_restype_3, restype_3_to_index, chisPerAA
+from CryoNetRefine.libs.prot_utils.residue_constants import  index_to_restype_3, restype_3_to_index, chisPerAA
 from .utils import (
     chiralty, construct_fourth_batch, calc_dihedral_batch, calc_dihedrals,
     interpolate_2d, aaTables, rama_tables, ramaz_db,
@@ -26,15 +26,6 @@ RAMA_CISPRO = 2
 RAMA_TRANSPRO = 3
 RAMA_PREPRO = 4
 RAMA_ILE_VAL = 5
-
-restype3_to_atoms_index = dict(
-    [
-        (res, dict([(a, i) for (i, a) in enumerate(atoms)]))
-        for (res, atoms) in restype3_to_atoms.items()
-    ]
-)
-for residue in restype3_to_atoms_index:
-    restype3_to_atoms_index[residue]["OXT"] = restype3_to_atoms_index[residue]["O"]
 
 
 class GeoMetric:
@@ -365,7 +356,6 @@ class GeoMetric:
         # 🚀 Set requires_grad in batch to avoid multiple calls
         if not self.atom_pos.requires_grad:
             self.atom_pos.requires_grad_(True)
-        
         # 🚀 Set protein length
         self.prot_len = self.prot.aatype.shape[0]
         self.phi_psi = calc_dihedrals(self.atom_pos)   # Radians
@@ -495,21 +485,22 @@ class GeoMetric:
         - self.phi_psi: [L, 2] backbone dihedrals
         - self.get_rama_types(): [L-2]
         """
-
         L = self.prot_len - 2
+        L = self.prot_len - 2
+        # Skip UNK residues (aatype >= 20 in 21-type vocabulary)
+        aa_mid = self.prot.aatype[1:self.prot_len - 1]  # [L], residue types for phi/psi positions
+        unk_mask = (aa_mid >= 20) if aa_mid.dim() > 0 else torch.zeros(L, device=self.phi_psi.device, dtype=torch.bool)
         phi_psi = self.phi_psi[:L]          # [L, 2] backbone dihedrals
         rama_types = self.get_rama_types()  # [L] per-residue rama type ids
         # Build rama_scores by type, keeping gradient. This is the simplest method.
         rama_scores = torch.zeros(L, device=phi_psi.device, dtype=phi_psi.dtype)
-        
         for type_id in range(len(rama_tables)):
-            mask = (rama_types == type_id)
+            mask = (rama_types == type_id) & ~unk_mask
             if mask.any():
                 # Select residues of the current type
                 scores = self.lookup_rama_scores_cached(phi_psi[mask], type_id)
                 # Assign results by index (in-places, keeps gradient)
                 rama_scores[mask] = scores
-
         rama_scores.requires_grad_(True)
 
         # ---- Fully vectorized outlier classification ----
@@ -531,7 +522,7 @@ class GeoMetric:
         rama_outliers = torch.where(favored_mask == 0, favored_mask, rama_outliers)
 
         rama_outliers.requires_grad_(True)
-
+        rama_outliers = rama_outliers * (~unk_mask).to(rama_outliers.dtype)
         return {
             "rama_types": rama_types,
             "rama_scores": rama_scores,
@@ -573,11 +564,11 @@ class GeoMetric:
     def ramaz_loss(self, output_path: str = None) -> Dict[str, torch.Tensor]:
         db = ramaz_db
         # Get basic information
+        # aa_type = torch.clamp(self.prot.aatype, 0, 19).clone().detach().to(dtype=int)
         aa_type = self.prot.aatype.clone().detach().to(dtype=int)
         atom_mask = self.prot.atom14_mask.clone().detach()
         device = self.phi_psi.device
         atom2res = self.prot.atom14_mask.nonzero()[0].clone().detach()
-
         # 🚀 Use cached secondary structure to avoid redundant calculations
         # Check if cache is valid: based on sequence match
         if (
@@ -596,8 +587,6 @@ class GeoMetric:
             # Cache result (store on CPU to save GPU memory)
             self.ss_types_res_cache = ss_types_res.clone().detach().cpu()
             self.ss_cache_seq = self.seq
-
-
         # z_scores=torch.zeros(self.prot_len-2,dtype=float,requires_grad=True)
         means=torch.zeros((3,22),dtype=float)
         stds=torch.zeros((3,22),dtype=float)
@@ -652,6 +641,9 @@ class GeoMetric:
         int_zsc=torch.zeros(self.prot_len-2,dtype=float,device=self.phi_psi.device)
         phi_psi_angles=self.phi_psi
         for idx in range(0,self.prot_len-2):
+            if aa_type[idx+1] >= 20:
+                int_zsc[idx]=torch.tensor(0.0, device=int_zsc.device, dtype=int_zsc.dtype)
+                continue
             # phi,psi=float(phi_psi_angles[idx][0]),float(phi_psi_angles[idx][1])
             phi, psi = phi_psi_angles[idx][0].item(), phi_psi_angles[idx][1].item()
             phi_psi=phi_psi_angles[idx]
@@ -659,7 +651,6 @@ class GeoMetric:
             resname=index_to_restype_3[aa_type[idx+1]]
             ss=ss_types_res[idx+1]
             ss=SS_TYPE[ss]
-
             '''get_z_score_point'''
             resname=_get_resname(int(rama_type),resname)
             if resname=="cisPRO": ss="L"
@@ -717,11 +708,9 @@ class GeoMetric:
             int_zsc[idx]=zsc
         int_zsc.requires_grad_(True)
         ss_types_res=ss_types_res[1:-1]
-
         helix_zscores=int_zsc[ss_types_res==1]
         sheet_zscores=int_zsc[ss_types_res==2]
         loop_zscores=int_zsc[ss_types_res==0]
-        
         # Handle empty secondary structure categories to avoid nan
         if helix_zscores.numel() > 0:
             helix_zsc=(helix_zscores.mean()-SS_CALIBRATION_VALUES["H"][0])/SS_CALIBRATION_VALUES["H"][1]
@@ -737,7 +726,6 @@ class GeoMetric:
             loop_zsc=(loop_zscores.mean()-SS_CALIBRATION_VALUES["L"][0])/SS_CALIBRATION_VALUES["L"][1]
         else:
             loop_zsc = torch.tensor(0.0, device=int_zsc.device, dtype=int_zsc.dtype)
-
         whole_zsc=helix_zsc+sheet_zsc+loop_zsc
 
         return {
@@ -861,7 +849,8 @@ class GeoMetric:
 
         N, CA, C, CB = self.atom_pos[:, 0], self.atom_pos[:, 1], self.atom_pos[:, 2], self.atom_pos[:, 4]
 
-        angle_data = self.idealized_ca_tensor[self.prot.aatype]  
+        aatype_safe = torch.clamp(self.prot.aatype, 0, 19)
+        angle_data = self.idealized_ca_tensor[aatype_safe]
 
         dist           = angle_data[:, 0]                   
         angleCAB_deg   = angle_data[:, 1]                
@@ -1072,11 +1061,11 @@ class GeoMetric:
                     compute_gradients=True
                 )
                 #--------debug
-                bond_deviations = energies_sites.bond_deviations()
-                angle_deviations = energies_sites.angle_deviations()
-                bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
-                angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
-                print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
+                # bond_deviations = energies_sites.bond_deviations()
+                # angle_deviations = energies_sites.angle_deviations()
+                # bond_rmsd = torch.tensor(bond_deviations[2], requires_grad=True)
+                # angle_rmsd = torch.tensor(angle_deviations[2], requires_grad=True)
+                # print(f'accurate bond_rmsd: {bond_rmsd}, angle_rmsd: {angle_rmsd}')
                 # 🚀 Cache grm, sites_cart, perm_tensor
                 self._rmsd_grm_cache = grm
                 self._rmsd_sites_cart_cache = sites_cart

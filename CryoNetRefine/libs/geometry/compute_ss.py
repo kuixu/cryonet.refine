@@ -170,22 +170,53 @@ filtered_ann = ssm.actual_sec_str.deep_copy()
 filtered_ann.remove_short_annotations(
     helix_min_len=4, sheet_min_len=4, keep_one_stranded_sheets=True
 )
-helix_sel = torch.tensor(asc.selection(filtered_ann.overall_helices_selection()).as_numpy_array(),dtype=bool)
-sheet_sel = torch.tensor(asc.selection(filtered_ann.overall_sheets_selection()).as_numpy_array(),dtype=bool)
+# helix_sel = torch.tensor(asc.selection(filtered_ann.overall_helices_selection()).as_numpy_array(),dtype=bool)
+# sheet_sel = torch.tensor(asc.selection(filtered_ann.overall_sheets_selection()).as_numpy_array(),dtype=bool)
 
-prot=get_protein_from_file_path(pdb_path)
-prot_len = prot.aatype.shape[0]
-aa_type = torch.tensor(prot.aatype,dtype=int)
-atom_pos = torch.tensor(prot.atom14_positions, requires_grad=True)
-atom_mask=torch.tensor(prot.atom14_mask)
-atom2res=torch.tensor(prot.atom14_mask.nonzero()[0])
-atom_len=atom2res.shape[0]
-# loop:0, helix:1, sheet:2
-ss_types_atom=torch.zeros(atom_len,dtype=int)
-ss_types_atom[helix_sel]=1
-ss_types_atom[sheet_sel]=2
-ss_types_res=torch.zeros(prot_len,dtype=int)
-for i in range(prot_len):
-    ss_types_res[i]=ss_types_atom[torch.where(atom2res==i)[0][2]]
+# prot=get_protein_from_file_path(pdb_path)
+# prot_len = prot.aatype.shape[0]
 
-torch.save(ss_types_res,pickle_path)
+# atom2res=torch.tensor(prot.atom14_mask.nonzero()[0])
+# atom_len=atom2res.shape[0]
+# # loop:0, helix:1, sheet:2
+# ss_types_atom=torch.zeros(atom_len,dtype=int)
+# ss_types_atom[helix_sel]=1
+# ss_types_atom[sheet_sel]=2
+# ss_types_res=torch.zeros(prot_len,dtype=int)
+# for i in range(prot_len):
+#     ss_types_res[i]=ss_types_atom[torch.where(atom2res==i)[0][2]]
+
+
+# 2. Build a residue list in hierarchy order: (chain_id, resseq)
+residue_list = []
+for model in pdb_hierarchy.models():
+    for chain in model.chains():
+        for rg in chain.residue_groups():
+            residue_list.append((chain.id.strip(), rg.resseq_as_int()))
+
+n_residues = len(residue_list)
+ss_types_res = torch.zeros(n_residues, dtype=int)  # 0=loop, 1=helix, 2=sheet
+
+# 3. Fill helix annotation into ss_types_res from annotation.helices
+for h in filtered_ann.helices:
+    cid = h.start_chain_id.strip()
+    start_r = h.get_start_resseq_as_int()
+    end_r = h.get_end_resseq_as_int()
+    if start_r is None or end_r is None:
+        continue
+    for idx, (chain_id, resseq) in enumerate(residue_list):
+        if chain_id == cid and start_r <= resseq <= end_r:
+            ss_types_res[idx] = 1
+
+# 4. Fill sheet annotation from annotation.sheets (sheet takes precedence over loop and can optionally overwrite helix)
+for sh in filtered_ann.sheets:
+    for strand in sh.strands:
+        cid = strand.start_chain_id.strip()
+        start_r = strand.get_start_resseq_as_int()
+        end_r = strand.get_end_resseq_as_int()
+        if start_r is None or end_r is None:
+            continue
+        for idx, (chain_id, resseq) in enumerate(residue_list):
+            if chain_id == cid and start_r <= resseq <= end_r:
+                ss_types_res[idx] = 2
+torch.save(ss_types_res, pickle_path)

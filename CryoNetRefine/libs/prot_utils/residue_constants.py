@@ -32,6 +32,7 @@ restype_1to3 = {
     "W": "TRP",
     "Y": "TYR",
     "V": "VAL",
+    'X': 'UNK',
 }
 
 restype_3to1 = {
@@ -56,6 +57,7 @@ restype_3to1 = {
     "TYR": "Y",
     "VAL": "V",
     "HIC": "Z",
+    'UNK': 'X',
 }
 
 restype_3_to_index = {
@@ -615,7 +617,8 @@ restype3_to_atoms_index = dict(
     ]
 )
 for residue in restype3_to_atoms_index:
-    restype3_to_atoms_index[residue]["OXT"] = restype3_to_atoms_index[residue]["O"]
+    if residue != "UNK":
+        restype3_to_atoms_index[residue]["OXT"] = restype3_to_atoms_index[residue]["O"]
 
 backbone_atoms = set(["CA", "C", "N"])
 

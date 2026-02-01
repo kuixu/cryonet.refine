@@ -20,7 +20,6 @@ def mol_atom_density_np(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     
     bmin = np.floor(atom_coords.min(axis=0)) 
     bmax = np.ceil(atom_coords.max(axis=0))  
-
     # transform coords into density space
     coords_den = atom_coords / voxel_size
     bcen = (bmax + bmin) / 2 / voxel_size
@@ -220,7 +219,6 @@ class DensityInfo:
             else:
                 mrc_path = mrc_path.replace(".npz",".mrc")
         assert os.path.exists(mrc_path), mrc_path+" not found!"
-        # breakpoint()
         # parse map file
         if self.parser=="mrc":
             return self.__get_map_data_by_mrc__(mrc_path)
@@ -489,7 +487,6 @@ class DensityInfo:
             m_ov = mol_den.density.reshape(-1)
             t_ov = t_ov.reshape(-1)[m_ov>0]
             m_ov = m_ov[m_ov>0]
-            # breakpoint()
             return t_ov.reshape(1,-1), m_ov.reshape(1,-1)
         else:
             
