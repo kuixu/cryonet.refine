@@ -1169,6 +1169,7 @@ class GeoMetric:
                     "bond_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                     "angle_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                 }
+        else:
             # 🚀 Use cache
             grm = self._rmsd_grm_cache
             sites_cart = self._rmsd_sites_cart_cache
