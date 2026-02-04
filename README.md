@@ -96,7 +96,7 @@ Make sure this is done inside the `cryonet.refine` conda environment.
 From the project root (`cryonet.refine`), run:
 
 ```bash
-sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 /output
+sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 ./output
 ```
 
 ### Arguments
