@@ -145,11 +145,17 @@ Refinement performance may decrease for structures with many missing or unresolv
 
 ## 🙏 Acknowledgements
 
-CryoNet.Refine borrows code from the **Boltz** project:
+CryoNet.Refine borrows and adapts code from the **Boltz** project  
+(https://github.com/jwohlwend/boltz.git). Parts of the original codebase were
+extended and modified, and the model was further fine-tuned for our specific
+refinement setting. We gratefully acknowledge the Boltz authors for making their
+work openly available.
 
-Repository: `https://github.com/jwohlwend/boltz.git`
-
-We have adapted and extended parts of their codebase and finetuned the model for our specific refinement setting. We gratefully acknowledge the Boltz authors for making their work available.
+This work also makes use of the *Computational Crystallography Toolbox* (cctbx)
+project (https://github.com/cctbx/cctbx_project), from which we utilize geometry
+restraint interfaces, including bond, angle, and non-bonded interaction terms.
+We thank the cctbx developers for providing a robust and well-maintained framework
+for macromolecular geometry modeling and refinement.
 
 ---
 
