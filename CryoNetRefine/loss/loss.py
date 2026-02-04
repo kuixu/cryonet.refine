@@ -278,6 +278,8 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         result = gm.compute_bond_angle_rmsd_from_pdb(output_path, pred_coords_unpad_tensor, cache_key=cache_key)
         bond_rmsd = result["bond_rmsd"]
         angle_rmsd = result["angle_rmsd"]
+        clash_loss = result["nonbonded_loss"]
+        loss_dict["clash"] = clash_loss
 
         if weights.get("bond", 0.0) > 0.0:
             loss_dict["bond"] = bond_rmsd
@@ -291,28 +293,28 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         time_loss_dict["bond_angle"] = 0.0
 
 
-    if weights.get("clash", 0.0) > 0.0:
-        clash_start_time = time.time()
-        if use_global_clash:
-            clashscore, _ = probe_style_clash_loss(
-                final_global_refined_coords,  # [B, N, 3]
-                global_feats,
-                clash_cutoff=-0.4,
-                softness=10.0,
-            )
-        else:
-            clashscore, _ = probe_style_clash_loss(
-                predicted_coords,  # [B, N, 3]
-                feats,
-                clash_cutoff=-0.4,
-                softness=10.0,
-            )
-        loss_dict["clash"] = clashscore.mean()
-        time_loss_dict["clash"] = time.time() - clash_start_time
+    # if weights.get("clash", 0.0) > 0.0:
+    #     clash_start_time = time.time()
+    #     if use_global_clash:
+    #         clashscore, _ = probe_style_clash_loss(
+    #             final_global_refined_coords,  # [B, N, 3]
+    #             global_feats,
+    #             clash_cutoff=-0.4,
+    #             softness=10.0,
+    #         )
+    #     else:
+    #         clashscore, _ = probe_style_clash_loss(
+    #             predicted_coords,  # [B, N, 3]
+    #             feats,
+    #             clash_cutoff=-0.4,
+    #             softness=10.0,
+    #         )
+    #     loss_dict["clash"] = clashscore.mean()
+    #     time_loss_dict["clash"] = time.time() - clash_start_time
         
-    else:
-        loss_dict["clash"] = torch.zeros((), device=device)
-        time_loss_dict["clash"] = 0.0
+    # else:
+    #     loss_dict["clash"] = torch.zeros((), device=device)
+    #     time_loss_dict["clash"] = 0.0
 
     os.system(f"rm {output_path}")
     return loss_dict, time_loss_dict
