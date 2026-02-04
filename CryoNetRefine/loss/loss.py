@@ -238,7 +238,15 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
     Returns (loss_dict)
     """
     loss_dict = {}
-    time_loss_dict = {}
+    time_loss_dict = {
+        "build_prot": 0.0,
+        "rama": 0.0,
+        "rotamer": 0.0,
+        "bond_angle": 0.0,
+        "cbeta": 0.0,
+        "ramaz": 0.0,
+        "clash": 0.0,
+    }
     if geometric_wrapper is None:
         wrapper = GeometricMetricWrapper(geom_root=geom_root, device=device, top8000_path=top8000_path)
     else:

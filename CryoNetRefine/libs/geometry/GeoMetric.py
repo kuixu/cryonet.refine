@@ -1134,11 +1134,11 @@ class GeoMetric:
                 # ================
                 from cctbx.geometry_restraints import flags as gr_flags
 
-                # site_labels 用于一些错误信息/类型检查；也让 pair_proxies 更稳
+                # site_labels is used for error messages/type checks; also makes pair_proxies more robust
                 site_labels = xray_structure.scatterers().extract_labels()
 
-                # 这里 grm 在你代码里可直接 .energies_sites()，基本就是 cctbx.geometry_restraints.manager
-                # 为了确保 nonbonded proxies 会生成，显式打开 bond+nonbonded
+                # Here, grm can directly call .energies_sites(), essentially a cctbx.geometry_restraints.manager
+                # To ensure nonbonded proxies are generated, explicitly enable bond+nonbonded
                 pp = grm.pair_proxies(
                     sites_cart=sites_cart,
                     site_labels=site_labels,
@@ -1148,7 +1148,7 @@ class GeoMetric:
                 nb = pp.nonbonded_proxies  # nonbonded_sorted_asu_proxies_base
                 nb_i, nb_j, nb_vdw = [], [], []
 
-                # cryo-EM/P1：先用 simple 就够了（asu 主要是晶体对称）
+                # For cryo-EM/P1: using 'simple' is sufficient (asu is mainly for crystallographic symmetry)
                 for proxy in nb.simple:
                     i, j = proxy.i_seqs
                     nb_i.append(i)
@@ -1169,7 +1169,6 @@ class GeoMetric:
                     "bond_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                     "angle_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                 }
-        else:
             # 🚀 Use cache
             grm = self._rmsd_grm_cache
             sites_cart = self._rmsd_sites_cart_cache
