@@ -11,6 +11,8 @@ import iotbx.pdb
 from mmtbx.monomer_library import pdb_interpretation
 from mmtbx.monomer_library import server as mon_lib_server
 from mmtbx.monomer_library import cif_types
+from cctbx.geometry_restraints import flags as gr_flags
+
 from CryoNetRefine.libs.protein import Protein
 from CryoNetRefine.libs.prot_utils import residue_constants 
 from CryoNetRefine.libs.prot_utils.residue_constants import  index_to_restype_3, restype_3_to_index, chisPerAA
@@ -49,7 +51,9 @@ class GeoMetric:
         self._rmsd_sites_cart_cache = None  # sites_cart cache
         self._rmsd_perm_tensor_cache = None  # atom order mapping cache
         self._rmsd_cache_key = None  # cache key used for validity check (based on crop_idx and num_atoms)
-
+        self._nb_i_cpu = None
+        self._nb_j_cpu = None
+        self._nb_vdw_cpu = None
         self._setup_static_attributes()
 
         if protein is not None:
@@ -1125,7 +1129,35 @@ class GeoMetric:
                 self._angle_k_cpu = torch.tensor(angle_k, dtype=torch.long)
                 self._angle_ideal_cpu = torch.tensor(angle_ideal, dtype=torch.float64)
 
+                # ================
+                # 🚀 Nonbonded proxies (repulsion)
+                # ================
+                from cctbx.geometry_restraints import flags as gr_flags
 
+                # site_labels 用于一些错误信息/类型检查；也让 pair_proxies 更稳
+                site_labels = xray_structure.scatterers().extract_labels()
+
+                # 这里 grm 在你代码里可直接 .energies_sites()，基本就是 cctbx.geometry_restraints.manager
+                # 为了确保 nonbonded proxies 会生成，显式打开 bond+nonbonded
+                pp = grm.pair_proxies(
+                    sites_cart=sites_cart,
+                    site_labels=site_labels,
+                    flags=gr_flags.flags(default=True)
+                )
+
+                nb = pp.nonbonded_proxies  # nonbonded_sorted_asu_proxies_base
+                nb_i, nb_j, nb_vdw = [], [], []
+
+                # cryo-EM/P1：先用 simple 就够了（asu 主要是晶体对称）
+                for proxy in nb.simple:
+                    i, j = proxy.i_seqs
+                    nb_i.append(i)
+                    nb_j.append(j)
+                    nb_vdw.append(proxy.vdw_distance)
+
+                self._nb_i_cpu = torch.tensor(nb_i, dtype=torch.long, device="cpu")
+                self._nb_j_cpu = torch.tensor(nb_j, dtype=torch.long, device="cpu")
+                self._nb_vdw_cpu = torch.tensor(nb_vdw, dtype=torch.float64, device="cpu")
                 # print(f"💾 Cached GRM and atom mapping (key: {cache_key}), Time: {time.time() - start_time:.4f} seconds")
                 
             except Exception as e:
@@ -1165,8 +1197,10 @@ class GeoMetric:
         angle_j = self._angle_j_cpu.to(device)
         angle_k = self._angle_k_cpu.to(device)
         angle_ideal = self._angle_ideal_cpu.to(device)
-
-        # ============================================================
+        nb_i = self._nb_i_cpu.to(device)
+        nb_j = self._nb_j_cpu.to(device)
+        nb_vdw = self._nb_vdw_cpu.to(device)
+                # ============================================================
         # 🚀 Vectorized bond RMSD (same logic as original)
         # ============================================================
         if bond_i.numel() > 0:
@@ -1203,12 +1237,32 @@ class GeoMetric:
             angle_rmsd = torch.sqrt(torch.mean(delta * delta))
         else:
             angle_rmsd = torch.tensor(0.0, dtype=torch.float64, device=device, requires_grad=True)
+        # ============================================================
+        # 🚀 Nonbonded repulsion loss (Phenix-like prolsq)
+        # ============================================================
+        if nb_i.numel() > 0:
+            p1 = pred_coords_aligned_f64[nb_i]
+            p2 = pred_coords_aligned_f64[nb_j]
+            dist = torch.linalg.vector_norm(p2 - p1, dim=-1)
 
+            # prolsq: E = c_rep * max(0, (k*vdw)^irexp - dist^irexp)^rexp
+            c_rep = 16.0
+            k_rep = 1.0
+            irexp = 1.0
+            rexp = 4.0
 
+            term = (k_rep * nb_vdw).pow(irexp) - dist.pow(irexp)
+            term = torch.clamp(term, min=0.0)
+            e_pair = c_rep * term.pow(rexp)
+
+            nonbonded_loss = e_pair.mean()
+        else:
+            nonbonded_loss = torch.tensor(0.0, dtype=torch.float64, device=device, requires_grad=True)
         # print(f"Bond RMSD: {bond_rmsd}, Angle RMSD: {angle_rmsd}, Time: {time.time() - start_time:.4f} seconds")
         return {
             "bond_rmsd": bond_rmsd,
             "angle_rmsd": angle_rmsd,
+            "nonbonded_loss": nonbonded_loss,
         }
 
 
