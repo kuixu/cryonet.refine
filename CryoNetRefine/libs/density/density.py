@@ -69,7 +69,7 @@ def mol_atom_density_np(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
         density[p0[0]:p0[0]+w, p0[1]:p0[1]+h, p0[2]:p0[2]+l] += atom_cube
     return density, box0
 
-def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
+def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tensor=torch.tensor([1.0, 1.0, 1.0])):
     """
     torch version mol density by coords
 
@@ -80,10 +80,12 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     # print(f"atom_coords: {atom_coords}")
     if isinstance(atom_coords, np.ndarray):
         atom_coords = torch.from_numpy(atom_coords)
-    if isinstance(atom_weight, float):
-        atom_weight = torch.zeros(atom_coords.shape[0]) + atom_weight
-    # print(atom_coords.shape, voxel_size, res)
     device = atom_coords.device
+    if isinstance(atom_weight, float):
+        atom_weight = torch.zeros(atom_coords.shape[0], device=device) + atom_weight
+    else:
+        atom_weight = atom_weight.to(device)
+    voxel_size = voxel_size.to(device)
     bmin = torch.floor(atom_coords.amin(dim=0))  # Calculate minimum values along dimension 0
     bmax = torch.ceil(atom_coords.amax(dim=0))
     coords_den = atom_coords / voxel_size
@@ -92,7 +94,7 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     # mol density
     step_size = 50
     grid_edg  = math.sqrt(-math.log(1e-7))
-    gauss_radius = res / math.pi / voxel_size
+    gauss_radius = res / math.pi / voxel_size.mean()
     gbox = int(grid_edg * gauss_radius)
     grid_size = (gbox+1) * step_size
     gsphere = int(4 * gauss_radius) # todo
@@ -175,7 +177,7 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size=1.0):
     density.index_put_((x_indices, y_indices, z_indices), values, accumulate=True)
     return density, box0
 
-def mol_atom_density(atom_coords, atom_weight, res=3.0, voxel_size=1.0, datatype="numpy"):
+def mol_atom_density(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tensor=torch.tensor([1.0, 1.0, 1.0]), datatype="numpy"):
     if datatype=="numpy":
         return mol_atom_density_np(atom_coords, atom_weight, res, voxel_size)
     elif datatype=="torch":
@@ -455,9 +457,12 @@ class DensityInfo:
 
     def overlap_right(self, mol_den):
         tgt_den = self
-        device  = tgt_den.device
-        tgt_off = (tgt_den.get_offset()/self.apix).round().int()# fix add by huangfuyao 9/2 .round
-        mol_off = (mol_den.get_offset()/self.apix).round().int()
+        device  = mol_den.device
+        # tgt_off = (tgt_den.get_offset()/self.apix).round().int()# fix add by huangfuyao 9/2 .round
+        # mol_off = (mol_den.get_offset()/self.apix).round().int()
+        vx = self.voxel_size_tensor.to(device)
+        tgt_off = (tgt_den.get_offset().to(device) / vx).round().int()
+        mol_off = (mol_den.get_offset() / vx).round().int()
         t_s = tgt_den.shape
         m_s = mol_den.shape
 
