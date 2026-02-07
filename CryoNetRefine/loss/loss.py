@@ -25,7 +25,7 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weight
     loss_den_cos_list = []
     for target_density_obj in target_density:
         resolution = target_density_obj.resolution
-        voxel_size = target_density_obj.voxel_size
+        voxel_size = target_density_obj.voxel_size_tensor.to(device)
         current_atom_coords = predicted_coords[batch_idx]  # [num_atoms, 3]
         # unpad
         pad_masks = feats["atom_pad_mask"].squeeze(0)
@@ -48,12 +48,12 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weight
             voxel_size=voxel_size,
             datatype="torch"
         )
-
         offset = nxyz * voxel_size ## fix!!!
         mol_den = DensityInfo(
             density=mol_density,
             offset=offset,
             apix=voxel_size,
+            voxel_size_tensor=voxel_size,
             datatype="torch",
             device=device
         )
