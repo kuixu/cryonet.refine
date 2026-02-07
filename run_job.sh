@@ -13,7 +13,7 @@ cif_filename=$(jq -r '.pdbfile | split("/")[-1]' $stg)
 cif=${d}/${cif_filename}
 
 # tem=${out_dir}_aem0.pdb
-out=${out_dir}_CryoNet.Refine.cif
+out=${out_dir}_CryoNet.Refine.pdb
 log=${out_dir}.log
 # python cryofold.py -m $map -s $seq -t $tem 
 
