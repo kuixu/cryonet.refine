@@ -50,8 +50,8 @@ class RefineArgs:
         "angle": 1,
         "cbeta": 1.0,
         "ramaz": 1.00,
-        "violation": 0.0,
         "clash": 0.1,
+        "nonbonded" : 100,
     })
     use_global_clash: bool = False
     data_dir: str | None = None
