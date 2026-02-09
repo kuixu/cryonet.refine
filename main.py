@@ -32,6 +32,7 @@ from CryoNetRefine.data.parse.input import (
     PairformerArgs, check_inputs, process_inputs
 )
 from CryoNetRefine.data.parse.validate import validate_inputs
+from CryoNetRefine.data.output.metrics_validation import run_validation
 from CryoNetRefine.libs.density.density import DensityInfo
 from CryoNetRefine.model.model import CryoNetRefineModel
 from CryoNetRefine.model.engine import Engine, RefineArgs, set_seed
@@ -124,6 +125,7 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 @click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
+@click.option("--validate_output", is_flag=True, help="Validate output flag", default=False)
 def refine(
     data: str,
     out_dir: str,
@@ -150,7 +152,7 @@ def refine(
     max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
     use_global_clash: bool = True,
-
+    validate_output: bool = False,
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -278,6 +280,9 @@ def refine(
         output_path = out_dir / f"{pdb_id}_{out_suffix}.pdb"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_refined_structure(batch, refined_coords, data_dir, output_path)
+        if validate_output:
+            run_validation(output_path, target_density_obj[0].mrc_path, target_density_obj[0].resolution)
+            click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
     if 'refiner' in locals():
