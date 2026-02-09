@@ -111,7 +111,8 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
 @click.option("--recycles", type=int, help="Number of refinement recycles", default=300)
 @click.option("--enable_cropping", is_flag=True, help="Enable cropping for large structures", default=True)
 @click.option("--cond_early_stop", type=str, help="Condition early stop", default="loss")
-@click.option("--clash", type=float, help="Weight for clash loss", default=100)
+@click.option("--clash", type=float, help="Weight for clash loss", default=0.1)
+@click.option("--nonbonded", type=float, help="Weight for nonbonded loss", default=100)
 @click.option("--den", type=float, help="Weight for density loss", default=20.0)
 @click.option("--rama", type=float, help="Weight for rama loss", default=500.0)
 @click.option("--rotamer", type=float, help="Weight for rotamer loss", default=500.0)
@@ -137,6 +138,7 @@ def refine(
     enable_cropping: bool = True,
     cond_early_stop: str = "loss",
     clash: int = 0.1,
+    nonbonded: int = 100,
     den: int = 20.0,
     rama: int = 500.0,
     rotamer: int = 500.0,
@@ -217,6 +219,7 @@ def refine(
     refine_args.data_dir = data_dir
     refine_args.num_recycles = recycles
     refine_args.weight_dict["clash"] = clash
+    refine_args.weight_dict["nonbonded"] = nonbonded
     refine_args.weight_dict["den"] = den
     refine_args.weight_dict["rama"] = rama
     refine_args.weight_dict["rotamer"] = rotamer

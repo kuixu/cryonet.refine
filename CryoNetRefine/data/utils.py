@@ -13,7 +13,6 @@ class NpEncoder(json.JSONEncoder):
         return super(NpEncoder, self).default(obj)
 
 def update_status(pdb_dir, jdict):
-    # 
     # jdict = {'msg': 'Out of memory', 'error_code':0, "stg": 5, "progress": 10}
     sfile = f'{pdb_dir}/status'
     if Path(sfile).exists():
