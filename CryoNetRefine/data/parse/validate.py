@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
-
+from CryoNetRefine.data.utils import update_status
 import torch
 import gemmi
 
@@ -237,19 +237,20 @@ def validate_initial_cc_from_structure_paths(
 
 
 def validate_inputs(
-    input_path: PathLike,
+    input_path: PathInput,
     target_density: Optional[Sequence[PathLike]] = None,
     resolution: Optional[Sequence[float]] = None,
     device: Union[str, torch.device] = "cpu",
     cc_threshold: float = 0.0,
 ) -> ValidateReport:
     """
-    做三类检查：
-    1) 非20AA/非核酸碱基（也即不在 data/mols/*.pkl 支持列表）-> 提示用户会跳过
-    2) 初始全局 CC（直接从 input_path 解析原子坐标；需要 target_density+resolution 或传入 target_density_obj）
-    3) gap（missing residue）检测
+    Perform three types of checks:
+    1) Non-20AA/non-nucleic residues (i.e., not in data/mols/*.pkl support list) -> Warn user that these residues will be skipped if unrecognized.
+    2) Initial global CC (calculate from input_path atomic coordinates; requires target_density + resolution or a supplied target_density_obj)
+    3) Gap (missing residue) detection
     """
     paths = _normalize_input_paths(input_path)
+    pdb_dir = paths[0].parent
     supported = _supported_residue_codes()
 
     messages: List[str] = []
@@ -275,7 +276,7 @@ def validate_inputs(
             "Warning: found unsupported residue codes (not standard 20AA / not nucleic bases). "
             f"We will skip these residues if they cannot be parsed: {unsupported_list}"
         )
-
+        update_status(pdb_dir, {'msg': f"Unsupported residues found: {unsupported_list}", 'error_code':0, "stg": 5, "progress": 10})
     gap_info = GapInfo(has_gap=(total_missing > 0), chain_to_ranges=gap_agg, total_missing=total_missing)
     if gap_info.has_gap:
         messages.append(
@@ -283,7 +284,7 @@ def validate_inputs(
             f"total_missing={gap_info.total_missing}, chains={gap_info.chain_to_ranges}. "
             "Refinement quality may degrade."
         )
-
+        update_status(pdb_dir, {'msg': f"Warning: missing residues (gaps) detected in polymer chains. Refinement quality may degrade.", 'error_code':0, "stg": 5, "progress": 10})
     cc_val = None
     cc_ok = None
     td_obj: Optional[Sequence[DensityInfo]] = None
@@ -310,6 +311,8 @@ def validate_inputs(
             supported_residue_names=supported,
         )
         messages.append(cc_msg)
+        if not cc_ok:
+            update_status(pdb_dir, {'msg': f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.", 'error_code':0, "stg": 5, "progress": 10})
 
     return ValidateReport(
         unsupported_residues=unsupported_list,
