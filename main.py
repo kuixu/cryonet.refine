@@ -21,6 +21,7 @@ if __name__ == "__main__":
 
 import click,time, warnings
 from tqdm import tqdm
+import shutil
 from pathlib import Path
 from typing import  Optional
 from dataclasses import asdict
@@ -287,6 +288,9 @@ def refine(
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
+    if processed_dir.exists():
+        shutil.rmtree(processed_dir)
+        click.echo(f"Removed intermediate directory: {processed_dir}")
     if 'refiner' in locals():
         refiner.clear_caches()
     if 'refiner' in locals() and hasattr(refiner, 'geometric_adapter'):
@@ -294,6 +298,7 @@ def refine(
         click.echo(f"Structure cache info: {cache_info}")
     click.echo("Refinement completed!")
     end_time = time.time()
+
     click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":
