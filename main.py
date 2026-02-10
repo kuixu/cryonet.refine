@@ -281,7 +281,9 @@ def refine(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_refined_structure(batch, refined_coords, data_dir, output_path)
         if validate_output:
-            run_validation(output_path, target_density_obj[0].mrc_path, target_density_obj[0].resolution)
+            map_path = str(Path(target_density_obj[0].path).expanduser().absolute())
+            pdb_path = str(Path(output_path).expanduser().absolute())
+            run_validation(map_path, pdb_path, target_density_obj[0].resolution)
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")

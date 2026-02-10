@@ -53,7 +53,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --out_suffix CryoNet.Refine \
     --checkpoint $checkpoint \
     --max_tokens $max_tokens \
-    --validate_output True \
+    --validate_output \
  
 echo "CryoNet.Refine refinement completed!"
 

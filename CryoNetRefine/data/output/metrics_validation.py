@@ -10,7 +10,8 @@ from pathlib import Path
 import re
 import json
 
-phenix_env = "/home/huangfuyao/sw/phenix-1.13-2998/phenix_env.sh"
+phenix_env = "/opt/phenix-1.21.1-5286/phenix_env.sh"
+# ChimeraX: optional env script to source before running; executable path or name
 chimerax_cmd = "/usr/bin/chimerax"  # full path or "chimerax" to use PATH
 
 def parse_args():
@@ -111,6 +112,8 @@ def compute_qscore_chimerax(
 ) -> float:
     """
     Run ChimeraX qscore (headless) and return overall mean Q-Score.
+    Uses module-level chimerax_cmd/chimerax_env if not passed.
+    If chimerax_env is set, runs `source chimerax_env && chimerax_cmd ...` before calling ChimeraX.
     Returns NaN if ChimeraX/qscore fails or output can't be parsed.
     """
     if chimerax_cmd is None:
