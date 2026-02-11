@@ -262,8 +262,6 @@ def refine(
     data_module.setup("predict")
     dataloader = data_module.predict_dataloader()
     # Perform refinement for each structure
-    from CryoNetRefine.loss.loss import compute_overall_cc_loss
-    from CryoNetRefine.data.const import atom_weight  # 如果你需要 atom_weights
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx}")
         coords0 = batch["template_coords"].squeeze(0).squeeze(0)   # [12160, 3]
@@ -283,8 +281,10 @@ def refine(
         write_refined_structure(batch, refined_coords, data_dir, output_path)
         if validate_output:
             map_path = str(Path(target_density_obj[0].path).expanduser().absolute())
-            pdb_path = str(Path(output_path).expanduser().absolute())
-            run_validation(map_path, pdb_path, target_density_obj[0].resolution)
+            input_pdb_path = str(Path(data[0]).expanduser().resolve())
+            run_validation(map_path, input_pdb_path, target_density_obj[0].resolution)
+            output_pdb_path = str(Path(output_path).expanduser().absolute())
+            run_validation(map_path, output_pdb_path, target_density_obj[0].resolution)
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
