@@ -177,6 +177,9 @@ def refine(
     manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")
     # Load processed data !!
     processed_dir = out_dir / f"processed_{data_stem}"
+    if processed_dir.exists():
+        shutil.rmtree(processed_dir)
+        click.echo(f"Removed intermediate directory: {processed_dir}")
     processed = BoltzProcessedInput(
         manifest=manifest,
         template_dir=processed_dir / "templates" if (processed_dir / "templates").exists() else None,
