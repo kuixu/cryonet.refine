@@ -166,6 +166,11 @@ def refine(
     data = check_inputs(data)
     validate_inputs(input_path=data,target_density = target_density, resolution = resolution)
     mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
+    # Load processed data !!
+    processed_dir = out_dir / f"processed_{data_stem}"
+    if processed_dir.exists():
+        shutil.rmtree(processed_dir)
+        click.echo(f"Removed intermediate directory: {processed_dir}")
     process_inputs(
         data=data,
         data_stem=data_stem,
@@ -175,11 +180,6 @@ def refine(
     )
     # Load manifest
     manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")
-    # Load processed data !!
-    processed_dir = out_dir / f"processed_{data_stem}"
-    if processed_dir.exists():
-        shutil.rmtree(processed_dir)
-        click.echo(f"Removed intermediate directory: {processed_dir}")
     processed = BoltzProcessedInput(
         manifest=manifest,
         template_dir=processed_dir / "templates" if (processed_dir / "templates").exists() else None,
