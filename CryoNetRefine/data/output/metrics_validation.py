@@ -720,7 +720,7 @@ def run_validation(map_path: str, pdb_path: str, r: float):
         cmd0 = f"rm -f {log_path}; "
         os.system(cmd0)
 
-        cmd1 = f"source {phenix_env} && phenix.map_model_cc {pdb_path} {map_path} resolution={r} >> {log_path}"
+        cmd1 = f"cd {wkdir} ; source {phenix_env} ; phenix.map_model_cc {pdb_path} {map_path} resolution={r} >> {log_path}"
         # cmd2=f"phenix.molprobity {pdb_path} >> {log_path}_geo"
         cmd2 = f"phenix.molprobity {pdb_path} coot=False probe_dots=False>> {log_path}"
         logger.info(cmd1)
