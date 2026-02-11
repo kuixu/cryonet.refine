@@ -9,10 +9,47 @@ import math
 from pathlib import Path
 import re
 import json
+import shlex
 
 phenix_env = "/opt/phenix-1.21.1-5286/phenix_env.sh"
 # ChimeraX: optional env script to source before running; executable path or name
 chimerax_cmd = "/usr/bin/chimerax"  # full path or "chimerax" to use PATH
+
+
+def _run_bash_with_env(cmd: str, *, cwd: str | Path | None = None, log_path: str | Path | None = None) -> int:
+    """
+    Run a command under bash, sourcing Phenix env first.
+    - cmd: command string WITHOUT redirections
+    - cwd: working directory
+    - log_path: if provided, append stdout+stderr to this file (binary-safe)
+    """
+    # Use bash because `/bin/sh` may not support `source`.
+    env_src = f"source {shlex.quote(phenix_env)}"
+    full = f"{env_src} && {cmd}"
+    stdout_target = None
+    try:
+        if log_path is not None:
+            log_path = str(log_path)
+            os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+            stdout_target = open(log_path, "ab")
+            p = subprocess.run(
+                ["bash", "-lc", full],
+                cwd=str(cwd) if cwd is not None else None,
+                stdout=stdout_target,
+                stderr=subprocess.STDOUT,
+            )
+        else:
+            p = subprocess.run(
+                ["bash", "-lc", full],
+                cwd=str(cwd) if cwd is not None else None,
+            )
+        return int(p.returncode)
+    finally:
+        try:
+            if stdout_target is not None:
+                stdout_target.close()
+        except Exception:
+            pass
 
 def parse_args():
     parse = argparse.ArgumentParser(description='Refinement Pipeline Options')   
@@ -695,6 +732,9 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         return False
 
 def run_validation(map_path: str, pdb_path: str, r: float):
+    # Be robust to Path-like inputs from callers
+    map_path = str(map_path)
+    pdb_path = str(pdb_path)
     wkdir = os.path.dirname(pdb_path)
     # emdb = os.path.basename(pdb_path).replace(in_suffix+".pdb", "")
     emdb = os.path.basename(pdb_path).split(".")[0].split("_")[0].split("-")[0]
@@ -705,7 +745,7 @@ def run_validation(map_path: str, pdb_path: str, r: float):
     vc_incomplete = False
     if os.path.exists(log_path):
         try:
-            with open(log_path, "r") as f:
+            with open(log_path, "r", errors="ignore") as f:
                 vc_incomplete = "Clashscore" not in f.read()
         except Exception:
             vc_incomplete = True
@@ -720,15 +760,18 @@ def run_validation(map_path: str, pdb_path: str, r: float):
         cmd0 = f"rm -f {log_path}; "
         os.system(cmd0)
 
-        cmd1 = f"cd {wkdir} ; source {phenix_env} ; phenix.map_model_cc {pdb_path} {map_path} resolution={r} >> {log_path}"
+        cmd1 = f"phenix.map_model_cc {shlex.quote(pdb_path)} {shlex.quote(map_path)} resolution={r}"
         # cmd2=f"phenix.molprobity {pdb_path} >> {log_path}_geo"
-        cmd2 = f"phenix.molprobity {pdb_path} coot=False probe_dots=False>> {log_path}"
+        cmd2 = f"phenix.molprobity {shlex.quote(pdb_path)} coot=False probe_dots=False"
         logger.info(cmd1)
         logger.info(cmd2)
 
         t = time.perf_counter()
-        ret = os.system(cmd1)
-        ret = os.system(cmd2)
+        ret = _run_bash_with_env(cmd1, cwd=wkdir, log_path=log_path)
+        ret2 = _run_bash_with_env(cmd2, cwd=wkdir, log_path=log_path)
+        # keep last non-zero if any
+        if ret == 0 and ret2 != 0:
+            ret = ret2
         validation_time = time.perf_counter() - t
         logger.info("Validation time for {:s}: {:.4f}s".format(emdb, validation_time))
         need_vcx_update = True
@@ -737,7 +780,7 @@ def run_validation(map_path: str, pdb_path: str, r: float):
     need_emringer = False
     if os.path.exists(log_path):
         try:
-            with open(log_path, "r") as f:
+            with open(log_path, "r", errors="ignore") as f:
                 need_emringer = "EMRinger Score:" not in f.read()
         except Exception:
             need_emringer = True
@@ -745,10 +788,10 @@ def run_validation(map_path: str, pdb_path: str, r: float):
         logger.info(f"Computing EMRinger via phenix.emringer for {emdb}...")
         # Reset bfactor before emringer to be consistent
         reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
-        cmd3 = f"cd {wkdir}; phenix.emringer {pdb_path} {map_path} >> {log_path}"
+        cmd3 = f"phenix.emringer {shlex.quote(pdb_path)} {shlex.quote(map_path)}"
         logger.info(cmd3)
         t_em = time.perf_counter()
-        ret_em = os.system(cmd3)
+        ret_em = _run_bash_with_env(cmd3, cwd=wkdir, log_path=log_path)
         dt_em = time.perf_counter() - t_em
         if ret_em != 0:
             logger.warning(f"phenix.emringer failed for {emdb} (exit={ret_em}, time={dt_em:.2f}s)")
