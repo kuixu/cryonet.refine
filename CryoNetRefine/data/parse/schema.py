@@ -262,42 +262,8 @@ def parse_refine_schema(
     - Does NOT rebuild a new Structure from `schema["sequences"]`.
     """
 
-    def get_available_chain_name(used_chain_names):
-        """
-        Get next available chain name following the order:
-        1. A-Z (26 uppercase letters)
-        2. 0-9 (10 digits)
-        3. a-z (26 lowercase letters)
-        
-        This supports up to 62 unique chains.
-        If more chains are needed, generates X0, X1, X2, etc.
-        """
-        # Try A-Z first
-        for ascii_c in map(chr, range(ord('A'), ord('Z') + 1)):
-            if ascii_c not in used_chain_names:
-                return ascii_c
-        
-        # Then try 0-9
-        for digit in map(str, range(10)):
-            if digit not in used_chain_names:
-                return digit
-        
-        # Finally try a-z
-        for ascii_c in map(chr, range(ord('a'), ord('z') + 1)):
-            if ascii_c not in used_chain_names:
-                return ascii_c
-        
-        # If all 62 names are used, fallback to generating names
-        counter = 0
-        while True:
-            candidate = f"X{counter}"
-            if candidate not in used_chain_names:
-                return candidate
-            counter += 1
-
     if not cif_path.exists():
         raise ValueError(f"File not found: {cif_path}")
-
     # Parse the input as a template structure
     path_str = str(cif_path)
     if cif_path.suffix.lower() == ".pdb":
@@ -320,31 +286,16 @@ def parse_refine_schema(
     data = parsed.data          # StructureV2
     sequences = parsed.sequences  # dict[chain_name -> sequence] if available
 
-    norm_sequences = {}
-    used_chain_names = set()
-
-    # Assign unique chain names sequentially
-    for chain in data.chains:
-        orig_chain_name = str(chain["name"])
-        # Get next available chain name from A-Z, 0-9, a-z pool
-        norm_chain_name = get_available_chain_name(used_chain_names)
-        used_chain_names.add(norm_chain_name)
-        chain["name"] = norm_chain_name
-        if isinstance(sequences, dict):
-            seq = sequences.get(orig_chain_name)
-            if seq:
-                norm_sequences[norm_chain_name] = seq
-
     templates = {cif_path.stem: data}
     extra_mols: dict[str, Mol] = {}
 
     # ---------- Construct template_records (each chain aligned to itself) ----------
     template_id = cif_path.stem
     template_records: list[TemplateInfo] = []
-    if isinstance(norm_sequences, dict):
+    if isinstance(sequences, dict):
         for chain in data.chains:
             chain_name = str(chain["name"]) 
-            seq = norm_sequences.get(chain_name)
+            seq = sequences.get(chain_name)
             if not seq:
                 continue
             seq_len = len(seq)
@@ -388,7 +339,7 @@ def parse_refine_schema(
     return Target(
         record=record,
         structure=data,
-        sequences=norm_sequences,
+        sequences=sequences,
         templates=templates,
         extra_mols=extra_mols,
     )

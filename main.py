@@ -279,7 +279,8 @@ def refine(
         best_loss = getattr(refiner, 'best_loss', None)
         best_cc = getattr(refiner, 'best_cc', None)
         # Save refined structure (best result)
-        output_path = out_dir / f"{pdb_id}_{out_suffix}.pdb"
+        # output_path = out_dir / f"{pdb_id}_{out_suffix}.pdb"
+        output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_refined_structure(batch, refined_coords, data_dir, output_path)
         if validate_output:

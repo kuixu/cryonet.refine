@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from CryoNetRefine.data import const
-from CryoNetRefine.data.write.utils import write_refined_structure_pdb, write_refined_structure_pdb_by_crop
+from CryoNetRefine.data.write.utils import write_refined_structure_cif, write_refined_structure_cif_by_crop
 from CryoNetRefine.libs.density.density import DensityInfo, mol_atom_density
 from CryoNetRefine.loss.geometric import GeometricAdapter, GeometricMetricWrapper
 
@@ -320,12 +320,12 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
 
     data_dir_str = str(data_dir)
     record_id = feats["record"][0].id
-    output_path = data_dir_str + f"/{record_id}_crop{crop_idx}_temp.pdb"
+    output_path = data_dir_str + f"/{record_id}_crop{crop_idx}_temp.cif"
     
     if feats.get("is_cropped", False):
-        write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, output_path)
+        write_refined_structure_cif_by_crop(predicted_coords, feats, data_dir, output_path)
     else:
-        write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path)
+        write_refined_structure_cif(predicted_coords, feats, data_dir, output_path)
     if not is_nucleic_acid:
         if geometric_adapter is None:
             adapter = GeometricAdapter(device=str(device),data_dir=data_dir)

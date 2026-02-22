@@ -530,7 +530,6 @@ class Engine:
         else:
             # Get actual model (handles DDP wrapping)
             model = self._get_model()
-            
             with torch.no_grad():
                 model.eval()  # Ensure trunk is in eval mode
                 s_inputs = model.input_embedder(crop_batch)

@@ -939,6 +939,60 @@ class GeoMetric:
             mon_lib_srv.link_link_id_dict["SS"] = dummy_ss_link
         
         return mon_lib_srv, ener_lib
+
+    @staticmethod
+    def _make_chain_ids_pdb_compatible_inplace(*hierarchies) -> None:
+        """
+        Make iotbx.pdb.hierarchy chain IDs unique and <=2 characters in-place.
+
+        Motivation:
+        - mmCIF/ModelCIF may contain chain IDs longer than 2 chars (e.g. 'AA1').
+        - Downstream mmtbx/pdb_interpretation may format/compare atom labels using
+          a PDB-like representation, where longer IDs can collide/truncate,
+          triggering 'duplicate atom labels' errors.
+
+        This is a minimal local fallback used when
+        `iotbx.pdb.forward_compatible_pdb_cif_conversion` is unavailable.
+        """
+        from itertools import product
+
+        # Collect all chain IDs across all provided hierarchies/models
+        all_chain_ids = []
+        for h in hierarchies:
+            for model in h.models():
+                for chain in model.chains():
+                    all_chain_ids.append(chain.id)
+
+        # IDs already PDB-compatible (<=2 chars) are preserved and reserved
+        used = {cid for cid in all_chain_ids if cid is not None and len(cid) <= 2}
+
+        # Generate new unique 2-char IDs (avoid collisions with existing ones)
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        gen = (a + b for a, b in product(alphabet, repeat=2))
+
+        def next_id() -> str:
+            for cid in gen:
+                if cid not in used:
+                    used.add(cid)
+                    return cid
+            raise RuntimeError("Ran out of unique 2-character chain IDs.")
+
+        mapping = {}
+        for cid in all_chain_ids:
+            if cid is None:
+                continue
+            if len(cid) > 2 and cid not in mapping:
+                mapping[cid] = next_id()
+
+        if not mapping:
+            return
+
+        # Apply mapping in-place
+        for h in hierarchies:
+            for model in h.models():
+                for chain in model.chains():
+                    if chain.id in mapping:
+                        chain.id = mapping[chain.id]
         
     def _get_atom_index(self, atom_name, residue_name):
         
@@ -986,6 +1040,40 @@ class GeoMetric:
         # if True:
             try:
                 pdb_inp = iotbx.pdb.input(file_name=pdb_path)
+
+                # ============================================================
+                # 🚀 mmCIF/ModelCIF often contains chain IDs >2 chars (e.g. AA1),
+                # which can collide when interpreted as PDB-style hierarchy,
+                # triggering "duplicate atom labels" errors in mmtbx.
+                # Convert to a forward-compatible representation BEFORE
+                # pdb_interpretation.process().
+                # ============================================================
+                hierarchy_unsorted = pdb_inp.construct_hierarchy(sort_atoms=False)
+                hierarchy_sorted = pdb_inp.construct_hierarchy(sort_atoms=True)
+
+                # Prefer cctbx's official forward-compatible conversion if available.
+                # Some cctbx builds may not ship this module, so fall back to a
+                # local minimal chain-id shortening.
+                try:
+                    from iotbx.pdb.forward_compatible_pdb_cif_conversion import (
+                        forward_compatible_pdb_cif_conversion,
+                    )
+
+                    conversion_info = forward_compatible_pdb_cif_conversion(
+                        hierarchy=hierarchy_unsorted
+                    )
+                    if conversion_info.conversion_required():
+                        hierarchy_unsorted = hierarchy_unsorted.as_forward_compatible_hierarchy(
+                            conversion_info=conversion_info
+                        )
+                        hierarchy_sorted = hierarchy_sorted.as_forward_compatible_hierarchy(
+                            conversion_info=conversion_info
+                        )
+                except ModuleNotFoundError:
+                    # Local fallback: ensure chain IDs are unique and <=2 chars.
+                    self._make_chain_ids_pdb_compatible_inplace(
+                        hierarchy_unsorted, hierarchy_sorted
+                    )
                 
                 # Setup monomer library server
                 mon_lib_srv, ener_lib = self._setup_monomer_library_server()
@@ -1001,6 +1089,7 @@ class GeoMetric:
                     mon_lib_srv=mon_lib_srv,
                     ener_lib=ener_lib,
                     pdb_inp=pdb_inp,
+                    pdb_hierarchy=hierarchy_sorted,
                     params=params, 
                     substitute_non_crystallographic_unit_cell_if_necessary=True,
                     log=log_buffer 
@@ -1022,9 +1111,8 @@ class GeoMetric:
                 # mmtbx reads PDB with sorted atoms (sort_atoms=True), need to create a mapping
                 # Map from mmtbx hierarchy atoms (after sorting) to original pred_coords
                 
-                # Read unsorted PDB to get the original atom order
-                pdb_inp_unsorted = iotbx.pdb.input(file_name=pdb_path)
-                hierarchy_unsorted = pdb_inp_unsorted.construct_hierarchy(sort_atoms=False)
+                # Use the same (potentially forward-compatible) unsorted hierarchy
+                # to match identifiers with the hierarchy used by mmtbx.
                 
                 # Build atom identifier -> pred_coords index mapping
                 # Use (chain_id, resseq, icode, resname, altloc, atom_name) as unique identifier
