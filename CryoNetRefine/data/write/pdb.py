@@ -27,7 +27,6 @@ def to_pdb(
 
     """
     pdb_lines = []
-
     atom_index = 1
     atom_reindex_ter = []
 
