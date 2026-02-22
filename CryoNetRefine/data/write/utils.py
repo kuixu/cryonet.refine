@@ -289,7 +289,10 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
 
         # Set coords and presence flags
         crop_atoms["coords"] = coord_unpad
-        # crop_atoms["is_present"] = True
+        # Ensure the written CIF is never empty: mark all cropped atoms present.
+        # (Some template structures may have is_present=False by default.)
+        if "is_present" in crop_atoms.dtype.names:
+            crop_atoms["is_present"] = True
         crop_coords = np.array([(x,) for x in coord_unpad], dtype=Coords)
         crop_residues["is_present"] = True
 
@@ -581,7 +584,9 @@ def write_refined_structure_cif_by_crop(predicted_coords, feats, data_dir, outpu
 
         # Set coords and presence flags
         crop_atoms["coords"] = coord_unpad
-        # crop_atoms["is_present"] = True
+        # Ensure CIF writer does not skip everything (would produce an empty CIF).
+        if "is_present" in crop_atoms.dtype.names:
+            crop_atoms["is_present"] = True
         crop_coords = np.array([(x,) for x in coord_unpad], dtype=Coords)
         crop_residues["is_present"] = True
 
@@ -611,6 +616,11 @@ def write_refined_structure_cif_by_crop(predicted_coords, feats, data_dir, outpu
             f.write(to_mmcif(crop_structure, plddts=None))
 
         return  # Molecule-aware path completed
+
+    # Non-molecule-aware crops: fall back to the contiguous-crop CIF writer
+    # (ensures is_present is set for the crop span).
+    write_refined_structure_cif(predicted_coords, feats, data_dir, output_path)
+    return
 
 def write_refined_structure(batch, refined_coords,data_dir,output_path):
         """Write refined structure and refinement info."""

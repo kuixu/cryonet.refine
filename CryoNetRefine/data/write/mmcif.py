@@ -1,3 +1,9 @@
+from __future__ import annotations
+from typing import Optional, Any
+from itertools import product
+import re
+from CryoNetRefine.data import const
+from CryoNetRefine.data.types import Structure, StructureV2
 import io
 import re
 from collections.abc import Iterator
@@ -10,14 +16,9 @@ from modelcif.model import AbInitioModel, Atom, ModelGroup
 from rdkit import Chem
 from torch import Tensor
 
-from CryoNetRefine.data import const
-from CryoNetRefine.data.types import Structure
-
-
-def to_mmcif(
+def to_mmcif_old(
     structure: Structure,
     plddts: Optional[Tensor] = None,
-
 ) -> str:  # noqa: C901, PLR0915, PLR0912
     """Write a structure into an MMCIF file.
 
@@ -303,3 +304,203 @@ def to_mmcif(
     fh = io.StringIO()
     dumper.write(fh, [system])
     return fh.getvalue()
+
+def _short_id_generator():
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    for c in alphabet:
+        yield c
+    for a, b in product(alphabet, repeat=2):
+        yield a + b
+
+
+def _build_chain_id_maps(chains):
+    """
+    Build:
+      - label_asym_id  (long id, your original)
+      - auth_asym_id   (short id <=2 chars)
+    """
+    gen = _short_id_generator()
+    mapping: dict[str, str] = {}
+    used = {str(c["name"]) for c in chains if len(str(c["name"])) <= 2}
+
+    def next_free() -> str:
+        while True:
+            cid = next(gen)
+            if cid not in used:
+                used.add(cid)
+                return cid
+
+    for chain in chains:
+        long_id = str(chain["name"])
+        if len(long_id) <= 2:
+            mapping[long_id] = long_id
+        else:
+            if long_id not in mapping:
+                mapping[long_id] = next_free()
+    return mapping
+
+
+def _entity_key(structure, chain):
+    """
+    Group entity by (sequence tuple, mol_type)
+    """
+    res_start = chain["res_idx"]
+    res_end = chain["res_idx"] + chain["res_num"]
+    residues = structure.residues[res_start:res_end]
+    seq = tuple(str(r["name"]) for r in residues)
+    return (seq, chain["mol_type"])
+
+
+def _infer_element_symbol(atom_name: str, res_name: str) -> str:
+    """
+    Infer element symbol from atom name, using the same ambiguous atom mapping
+    as the PDB writer.
+    """
+    atom_key = re.sub(r"\d", "", atom_name.strip())
+    if atom_key in const.ambiguous_atoms:
+        v = const.ambiguous_atoms[atom_key]
+        if isinstance(v, str):
+            element = v
+        elif res_name in v:
+            element = v[res_name]
+        else:
+            element = v["*"]
+    else:
+        element = atom_key[0] if atom_key else "C"
+    return str(element).upper()
+
+def to_mmcif(
+    structure: Structure | StructureV2,
+    plddts: Optional[Any] = None,
+) -> str:
+    """
+    Write an mmCIF string directly (no modelcif/ihm, no gemmi mmCIF writer),
+    always emitting a complete `_atom_site` loop compatible with iotbx/mmtbx.
+
+    Key semantics:
+    - `_atom_site.label_asym_id` uses your original (possibly long) chain IDs.
+    - `_atom_site.auth_asym_id` uses a short unique ID (<=2 chars) for cctbx.
+    """
+
+    # -------------------------
+    # 1️⃣ Build entity grouping (sequence, mol_type) -> entity_id
+    # -------------------------
+    entity_map: dict[tuple[tuple[str, ...], int], int] = {}
+    entity_id_counter = 1
+    for chain in structure.chains:
+        key = _entity_key(structure, chain)
+        if key not in entity_map:
+            entity_map[key] = entity_id_counter
+            entity_id_counter += 1
+
+    # label_asym_id -> short auth_asym_id
+    label_to_auth = _build_chain_id_maps(structure.chains)
+
+    # label_asym_id -> entity_id
+    label_to_entity_id: dict[str, int] = {}
+    for chain in structure.chains:
+        long_id = str(chain["name"])
+        label_to_entity_id[long_id] = int(entity_map[_entity_key(structure, chain)])
+
+    # -------------------------
+    # 2️⃣ Emit minimal header
+    # -------------------------
+    lines: list[str] = []
+    lines.append("data_model\n")
+    lines.append("_entry.id model\n")
+    lines.append("\n")
+    # IMPORTANT (cryo-EM): do NOT emit crystallographic unit cell / symmetry.
+    # A fake small unit cell (e.g. 1x1x1) makes mmtbx/pdb_interpretation reject the
+    # model ("Unit cell volume is incompatible with number of atoms").
+    # When crystal symmetry is absent, callers typically use:
+    #   substitute_non_crystallographic_unit_cell_if_necessary=True
+    # which will create a large non-crystallographic unit cell automatically.
+
+    # -------------------------
+    # 3️⃣ _atom_site loop (iotbx-required)
+    # -------------------------
+    tags = [
+        "_atom_site.group_PDB",
+        "_atom_site.id",
+        "_atom_site.type_symbol",
+        "_atom_site.label_atom_id",
+        "_atom_site.label_alt_id",
+        "_atom_site.label_comp_id",
+        "_atom_site.label_asym_id",
+        "_atom_site.label_entity_id",
+        "_atom_site.label_seq_id",
+        "_atom_site.pdbx_PDB_ins_code",
+        "_atom_site.Cartn_x",
+        "_atom_site.Cartn_y",
+        "_atom_site.Cartn_z",
+        "_atom_site.occupancy",
+        "_atom_site.B_iso_or_equiv",
+        "_atom_site.auth_seq_id",
+        "_atom_site.auth_comp_id",
+        "_atom_site.auth_asym_id",
+        "_atom_site.pdbx_PDB_model_num",
+    ]
+    lines.append("loop_\n")
+    for t in tags:
+        lines.append(f"{t}\n")
+
+    atom_id = 1
+    for chain in structure.chains:
+        long_id = str(chain["name"])
+        auth_id = label_to_auth.get(long_id, long_id[:2])
+        ent_id = label_to_entity_id.get(long_id, 1)
+
+        is_nonpoly = int(chain["mol_type"]) == int(const.chain_type_ids["NONPOLYMER"])
+        group_pdb = "HETATM" if is_nonpoly else "ATOM"
+
+        res_start = int(chain["res_idx"])
+        res_end = int(chain["res_idx"] + chain["res_num"])
+        residues = structure.residues[res_start:res_end]
+
+        for residue in residues:
+            res_name_full = str(residue["name"])
+            comp_id = "LIG" if is_nonpoly else res_name_full[:3]
+            seq_id = int(residue["res_idx"]) + 1
+
+            atom_start = int(residue["atom_idx"])
+            atom_end = int(residue["atom_idx"] + residue["atom_num"])
+            atoms = structure.atoms[atom_start:atom_end]
+
+            for atom in atoms:
+                if "is_present" in atoms.dtype.names and not bool(atom["is_present"]):
+                    continue
+
+                atom_name = str(atom["name"]).strip()
+                if atom_name == "OXT":
+                    continue
+
+                coords = atom["coords"]
+                x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
+                b = float(atom["bfactor"]) if "bfactor" in atoms.dtype.names else 1.0
+                element = _infer_element_symbol(atom_name, res_name_full)
+
+                row = [
+                    group_pdb,
+                    str(atom_id),
+                    element,
+                    atom_name,
+                    ".",
+                    comp_id,
+                    long_id,
+                    str(ent_id),
+                    str(seq_id),
+                    "?",
+                    f"{x:.5f}",
+                    f"{y:.5f}",
+                    f"{z:.5f}",
+                    "1",
+                    f"{b:.2f}",
+                    str(seq_id),
+                    comp_id,
+                    auth_id,
+                    "1",
+                ]
+                lines.append(" ".join(row) + "\n")
+                atom_id += 1
+
+    return "".join(lines)
