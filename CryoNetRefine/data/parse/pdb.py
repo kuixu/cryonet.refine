@@ -15,7 +15,6 @@ def parse_pdb(
         tmp_cif_path = tmp_cif_file.name
         structure = gemmi.read_structure(str(path))
         structure.setup_entities()
-        breakpoint()
         subchain_counts, subchain_renaming = {}, {}
         for chain in structure[0]:
             subchain_counts[chain.name] = 0
