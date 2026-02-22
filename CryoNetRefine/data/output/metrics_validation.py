@@ -196,14 +196,24 @@ def CC_goal(cc_value: float, low_95: float, high_95: float) -> bool:
     cc_val = float(cc_value)
     return cc_val >= float(low_95) and cc_val <= float(high_95)
 
+# CC_BOUNDS = {
+#     "CC_mask": {"low_95": 0.4131, "high_95": 0.8347},
+#     "CC_volume": {"low_95": 0.4642, "high_95": 0.8156},
+#     "CC_peaks": {"low_95": 0.1032, "high_95": 0.7493},
+#     "CC_box": {"low_95": 0.3950, "high_95": 0.7951},
+#     "CC_mc": {"low_95": 0.4711, "high_95": 0.8372},
+#     "CC_sc": {"low_95": 0.4800, "high_95": 0.8168},
+# }
+
 CC_BOUNDS = {
-    "CC_mask": {"low_95": 0.4131, "high_95": 0.8347},
-    "CC_volume": {"low_95": 0.4642, "high_95": 0.8156},
-    "CC_peaks": {"low_95": 0.1032, "high_95": 0.7493},
-    "CC_box": {"low_95": 0.3950, "high_95": 0.7951},
-    "CC_mc": {"low_95": 0.4711, "high_95": 0.8372},
-    "CC_sc": {"low_95": 0.4800, "high_95": 0.8168},
+    "CC_mask": {"low_95": 0.4131, "high_95": 1},
+    "CC_volume": {"low_95": 0.4642, "high_95": 1},
+    "CC_peaks": {"low_95": 0.1032, "high_95": 1},
+    "CC_box": {"low_95": 0.3950, "high_95": 1},
+    "CC_mc": {"low_95": 0.4711, "high_95": 1},
+    "CC_sc": {"low_95": 0.4800, "high_95": 1},
 }
+
 
 def _cc_goal(metric: str, v: float) -> bool:
     b = CC_BOUNDS[metric]
@@ -294,6 +304,18 @@ def execCmd(cmd):
     r.close()
     return text
 
+def _safe_float(value_str: str) -> float | None:
+    """
+    Safely convert string to float. Returns None if value is "None", empty, or invalid.
+    """
+    if not value_str or value_str.strip().lower() in ("none", ""):
+        return None
+    try:
+        return float(value_str.strip())
+    except (ValueError, AttributeError):
+        return None
+
+
 def parse_vc(ccfile, per_chain_cc=False):
 
     CC_mask, CC_volume, CC_peaks, CC_box = None, None, None, None
@@ -323,7 +345,7 @@ def parse_vc(ccfile, per_chain_cc=False):
         TWISTED_GENERAL = 0
         for idx in range(len(output)):
             if output[idx].startswith("    All-atom Clashscore"):
-                clashscore = float(output[idx].split(":")[1].strip())
+                clashscore = _safe_float(output[idx].split(":")[1].strip())
             elif output[idx].startswith("    Ramachandran Plot:"):
                 is_rama_outliers = True
                 is_rotamer_outliers = False
@@ -338,71 +360,75 @@ def parse_vc(ccfile, per_chain_cc=False):
             # rotamer_favored = 100 - rotamer_allowed
 
             elif is_rama_outliers and output[idx].startswith("      Outliers :"):
-                rama_outliers = float(
+                rama_outliers = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
             elif is_rama_outliers and output[idx].startswith("      Allowed  :"):
-                rama_allowed = float(
+                rama_allowed = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
             elif is_rama_outliers and output[idx].startswith("      Favored  :"):
-                rama_favored = float(
+                rama_favored = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
 
             elif is_rotamer_outliers and output[idx].startswith("      Outliers :"):
-                rotamer_outliers = float(
+                rotamer_outliers = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
             elif is_rotamer_outliers and output[idx].startswith("      Allowed  :"):
-                rotamer_allowed = float(
+                rotamer_allowed = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
             elif is_rotamer_outliers and output[idx].startswith("      Favored  :"):
-                rotamer_favored = float(
+                rotamer_favored = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
 
             elif output[idx].startswith("    Bond      :"):
-                Bond = float(output[idx].split(":")[1].strip().split()[0].strip())
+                Bond = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    Angle     :"):
-                Angle = float(output[idx].split(":")[1].strip().split()[0].strip())
+                Angle = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    Chirality :"):
-                Chirality = float(output[idx].split(":")[1].strip().split()[0].strip())
+                Chirality = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    Planarity :"):
-                Planarity = float(output[idx].split(":")[1].strip().split()[0].strip())
+                Planarity = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    Dihedral  :"):
-                Dihedral = float(output[idx].split(":")[1].strip().split()[0].strip())
+                Dihedral = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    whole:"):
-                rama_z = float(output[idx].split(":")[1].strip().split()[0].strip())
+                rama_z = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
 
             elif output[idx].startswith("    Cbeta Deviations :"):
-                cbeta_deviations = float(
+                cbeta_deviations = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
             elif output[idx].startswith("      Cis-proline     :"):
-                CIS_PROLINE = float(
+                val = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
+                CIS_PROLINE = val if val is not None else 0
             elif output[idx].startswith("      Cis-general     :"):
-                CIS_GENERAL = float(
+                val = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
+                CIS_GENERAL = val if val is not None else 0
             elif output[idx].startswith("      Twisted Proline :"):
-                TWISTED_PROLINE = float(
+                val = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
+                TWISTED_PROLINE = val if val is not None else 0
             elif output[idx].startswith("      Twisted General :"):
-                TWISTED_GENERAL = float(
+                val = _safe_float(
                     output[idx].split(":")[1].strip().split()[0].strip()
                 )
+                TWISTED_GENERAL = val if val is not None else 0
             elif output[idx].startswith("Map-model CC (overall)"):
                 CC_mask, CC_volume, CC_peaks, CC_box = [
-                    float(line.split(":")[1].strip())
+                    _safe_float(line.split(":")[1].strip())
                     for line in output[idx + 2 : idx + 6]
                 ]
             elif output[idx].startswith("Main chain:"):
-                CC_mc = float(output[idx + 2].strip().split()[0])
+                CC_mc = _safe_float(output[idx + 2].strip().split()[0])
                 chain_cc_region = False
             elif per_chain_cc and chain_cc_region:
                 fields = output[idx].strip().split()
@@ -412,29 +438,19 @@ def parse_vc(ccfile, per_chain_cc=False):
             elif per_chain_cc and output[idx].startswith("chain ID  CC"):
                 chain_cc_region = True
             elif output[idx].startswith("Side chain:"):
-                try:
-                    # breakpoint()
-                    CC_sc = float(output[idx + 2].strip().split()[0])
-                except ValueError:
-                    CC_sc = 0.0
+                CC_sc = _safe_float(output[idx + 2].strip().split()[0])
             # 添加 MolProbity score 解析
             elif "MolProbity score" in output[idx] and "=" in output[idx]:
                 # 处理格式: "  MolProbity score      =   2.48"
-                try:
-                    parts = output[idx].split("=")
-                    if len(parts) >= 2:
-                        molprobity_score = float(parts[1].strip())
-                except (ValueError, IndexError):
-                    pass
+                parts = output[idx].split("=")
+                if len(parts) >= 2:
+                    molprobity_score = _safe_float(parts[1].strip())
             # EMRinger Score（phenix.emringer 输出，可追加到 .vc）
             elif "EMRinger Score:" in output[idx]:
-                try:
-                    # 格式: "EMRinger Score: 2.523319"
-                    emringer_score = float(
-                        output[idx].split("EMRinger Score:")[1].strip().split()[0]
-                    )
-                except (ValueError, IndexError):
-                    pass
+                # 格式: "EMRinger Score: 2.523319"
+                emringer_score = _safe_float(
+                    output[idx].split("EMRinger Score:")[1].strip().split()[0]
+                )
     # import pdb;pdb.set_trace()
     return {
         "CC_mask": CC_mask,
@@ -472,7 +488,7 @@ def load_vc(vc_path):
     kv = line.strip().split()[1:]
     vc_dict = {}
     for i in range(len(kv) // 2):
-        vc_dict[kv[i * 2].strip(":")] = float(kv[i * 2 + 1])
+        vc_dict[kv[i * 2].strip(":")] = _safe_float(kv[i * 2 + 1])
     return vc_dict
 
 

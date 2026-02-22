@@ -59,6 +59,9 @@ def _read_structure_any(path: Path) -> gemmi.Structure:
     if path.suffix.lower() == ".pdb":
         st = gemmi.read_structure(str(path))
         st.setup_entities()
+        if len(st) > 1:
+            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) is not supported.", 'error_code':0, "stg": 5, "progress": 10})
+            raise ValueError("Multi-model PDB (with MODEL-ENDMDL) is not supported.")
         return st
     # treat as cif/mmcif
     block = gemmi.cif.read(str(path))[0]
