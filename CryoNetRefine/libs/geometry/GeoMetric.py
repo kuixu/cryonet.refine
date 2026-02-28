@@ -1270,8 +1270,6 @@ class GeoMetric:
         pred_coords_aligned = pred_coords_unpad_tensor[perm_tensor]
         # Upgrade precision to float64 to reduce numerical errors
         pred_coords_aligned_f64 = pred_coords_aligned.to(dtype=torch.float64)
-
-        start_time = time.time()
         # ============================================================
         # 🚀 Load cached proxy tensors to device (same as coords)
         # ============================================================

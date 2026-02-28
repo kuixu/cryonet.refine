@@ -274,17 +274,14 @@ class Engine:
         # OPTIMIZATION: Clear feature cache to prevent memory leaks
         if hasattr(self, 'crop_feature_cache'):
             self.crop_feature_cache.clear()
-            # print("🧹 Cleared feature cache")
         
         # Clear atom types cache
         if hasattr(self, 'crop_atom_types_cache'):
             self.crop_atom_types_cache.clear()
-            # print("🧹 Cleared atom types cache")
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-        # print("Cleared all caches and memory")
     
     def get_atom_types(self, crop_batch):
         """
