@@ -60,7 +60,7 @@ def _read_structure_any(path: Path) -> gemmi.Structure:
         st = gemmi.read_structure(str(path))
         st.setup_entities()
         if len(st) > 1:
-            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) is not supported.", 'error_code':0, "stg": 5, "progress": 10})
+            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) is not supported.", 'error_code':0, "progress": 10})
             raise ValueError("Multi-model PDB (with MODEL-ENDMDL) is not supported.")
         return st
     # treat as cif/mmcif
@@ -279,7 +279,7 @@ def validate_inputs(
             "Warning: found unsupported residue codes (not standard 20AA / not nucleic bases). "
             f"We will skip these residues if they cannot be parsed: {unsupported_list}"
         )
-        update_status(pdb_dir, {'msg': f"Unsupported residues found: {unsupported_list}", 'error_code':0, "stg": 5, "progress": 10})
+        update_status(pdb_dir, {'msg': f"Unsupported residues found: {unsupported_list}", 'error_code':0, "progress": 10})
     gap_info = GapInfo(has_gap=(total_missing > 0), chain_to_ranges=gap_agg, total_missing=total_missing)
     if gap_info.has_gap:
         messages.append(
@@ -287,7 +287,7 @@ def validate_inputs(
             f"total_missing={gap_info.total_missing}, chains={gap_info.chain_to_ranges}. "
             "Refinement quality may degrade."
         )
-        update_status(pdb_dir, {'msg': f"Warning: missing residues (gaps) detected in polymer chains. Refinement quality may degrade.", 'error_code':0, "stg": 5, "progress": 10})
+        update_status(pdb_dir, {'msg': f"Warning: missing residues (gaps) detected in polymer chains. Refinement quality may degrade.", 'error_code':0, "progress": 10})
     cc_val = None
     cc_ok = None
     td_obj: Optional[Sequence[DensityInfo]] = None
@@ -315,7 +315,7 @@ def validate_inputs(
         )
         messages.append(cc_msg)
         if not cc_ok:
-            update_status(pdb_dir, {'msg': f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.", 'error_code':0, "stg": 5, "progress": 10})
+            update_status(pdb_dir, {'msg': f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.", 'error_code':0, "progress": 10})
 
     return ValidateReport(
         unsupported_residues=unsupported_list,
