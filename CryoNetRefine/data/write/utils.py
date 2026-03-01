@@ -402,7 +402,8 @@ def write_refined_structure(batch, refined_coords,data_dir,output_path):
             # Save the CIF structure
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w") as f:
-                f.write(to_pdb(new_structure, plddts=None))
+                # f.write(to_pdb(new_structure, plddts=None))
+                f.write(to_mmcif(new_structure, plddts=None))
         except Exception as e:
             print(f"Error saving CIF structure: {e}")
             import traceback
