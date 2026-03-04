@@ -35,7 +35,8 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weight
         pad_masks = pad_masks[:L]
         current_atom_coords = current_atom_coords[:L]
         if feats.get("template_atom_present_mask", None) is not None:
-          present_mask = feats["template_atom_present_mask"].squeeze((0,1))
+          present_mask = feats["template_atom_present_mask"].reshape(-1)
+          present_mask = present_mask[:L]
           atom_mask = pad_masks.bool() & present_mask.bool()
         else:
           atom_mask = pad_masks.bool()

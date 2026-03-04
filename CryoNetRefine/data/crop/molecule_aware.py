@@ -309,14 +309,47 @@ class MoleculeTypeAwareSlidingWindowCropper:
                         padding = torch.zeros(1, padding_size, device=crop_batch[key].device, dtype=crop_batch[key].dtype)
                         crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
                     elif len(crop_batch[key].shape) == 3:
-                        # Handle both [1, N, ...] and [1, 1, N] shapes
-                        if crop_batch[key].shape[1] == 1:
-                            # [1, 1, N] shape - pad along dim 2
-                            padding = torch.zeros(1, 1, padding_size, device=crop_batch[key].device, dtype=crop_batch[key].dtype)
+                        if key == "template_atom_present_mask":
+                            # This mask is stored as [B, T, N_atoms] (typically [1,1,N]).
+                            # Always pad atom axis (last dim) to preserve semantics.
+                            padding = torch.zeros(
+                                crop_batch[key].shape[0],
+                                crop_batch[key].shape[1],
+                                padding_size,
+                                device=crop_batch[key].device,
+                                dtype=crop_batch[key].dtype,
+                            )
+                            crop_batch[key] = torch.cat([crop_batch[key], padding], dim=2)
+                            continue
+                        # Pad along the axis that corresponds to atom dimension.
+                        # This avoids misclassifying shapes like [1, 1, 3] (single atom xyz)
+                        # as [1, 1, N_atoms].
+                        if crop_batch[key].shape[1] == current_atom_count:
+                            padding = torch.zeros(
+                                1,
+                                padding_size,
+                                crop_batch[key].shape[2],
+                                device=crop_batch[key].device,
+                                dtype=crop_batch[key].dtype,
+                            )
+                            crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
+                        elif crop_batch[key].shape[2] == current_atom_count:
+                            padding = torch.zeros(
+                                crop_batch[key].shape[0],
+                                crop_batch[key].shape[1],
+                                padding_size,
+                                device=crop_batch[key].device,
+                                dtype=crop_batch[key].dtype,
+                            )
                             crop_batch[key] = torch.cat([crop_batch[key], padding], dim=2)
                         else:
-                            # [1, N, ...] shape - pad along dim 1
-                            padding = torch.zeros(1, padding_size, crop_batch[key].shape[2], device=crop_batch[key].device, dtype=crop_batch[key].dtype)
+                            padding = torch.zeros(
+                                1,
+                                padding_size,
+                                crop_batch[key].shape[2],
+                                device=crop_batch[key].device,
+                                dtype=crop_batch[key].dtype,
+                            )
                             crop_batch[key] = torch.cat([crop_batch[key], padding], dim=1)
                     elif len(crop_batch[key].shape) == 4 and key in ['template_coords', 'coords']:
                         padding = torch.zeros(1, crop_batch[key].shape[1], padding_size, crop_batch[key].shape[3], device=crop_batch[key].device, dtype=crop_batch[key].dtype)

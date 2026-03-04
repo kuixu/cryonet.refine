@@ -312,6 +312,24 @@ class AtomEncoder(Module):
         with torch.autocast("cuda", enabled=False):
             B, N, _ = feats["ref_pos"].shape
             atom_mask = feats["atom_pad_mask"].bool()  # Bool['b m'],
+            if atom_mask.shape[1] != N:
+                raise RuntimeError(
+                    "Atom feature dimension mismatch: "
+                    f"ref_pos.shape={tuple(feats['ref_pos'].shape)}, "
+                    f"atom_pad_mask.shape={tuple(feats['atom_pad_mask'].shape)}"
+                )
+            if feats["ref_atom_name_chars"].shape[1] != N:
+                raise RuntimeError(
+                    "Atom feature dimension mismatch: "
+                    f"ref_pos.shape={tuple(feats['ref_pos'].shape)}, "
+                    f"ref_atom_name_chars.shape={tuple(feats['ref_atom_name_chars'].shape)}"
+                )
+            if feats["ref_element"].shape[1] != N:
+                raise RuntimeError(
+                    "Atom feature dimension mismatch: "
+                    f"ref_pos.shape={tuple(feats['ref_pos'].shape)}, "
+                    f"ref_element.shape={tuple(feats['ref_element'].shape)}"
+                )
 
             atom_ref_pos = feats["ref_pos"]  # Float['b m 3'],
             atom_uid = feats["ref_space_uid"]  # Long['b m'],
