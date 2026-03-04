@@ -55,7 +55,7 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
     if checkpoint is None:
         # Use default location in params directory
         params_dir = Path(__file__).resolve().parent / "params"
-        checkpoint_path = params_dir / "cryonet.refine_model_checkpoint_best26.pt"
+        checkpoint_path = params_dir / "CryoNet.Refine_model.pt"
  
     else:
         checkpoint_path = Path(checkpoint)
@@ -102,9 +102,9 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
 
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
-@click.option("--out_suffix", type=str, help="Output suffix", default="refine")
+@click.option("--out_suffix", type=str, help="Output suffix", default="CryoNet.Refine")
 @click.option("--out_dir", type=click.Path(exists=False), help="Output directory", default="./refine_results")
-@click.option("--checkpoint", type=click.Path(exists=False), help="Model checkpoint", default=None)
+@click.option("--checkpoint", type=click.Path(exists=False), help="Model checkpoint", default=Path(__file__).resolve().parent / "params/CryoNet.Refine_model.pt")
 @click.option("--seed", type=int, help="Random seed", default=11)
 @click.option("--target_density", multiple=True, type=click.Path(exists=True), help="Target density map (.mrc file)", default=None)
 @click.option("--resolution", multiple=True, type=float, help="Resolution for density map operations", default=None)
@@ -286,9 +286,9 @@ def refine(
         if validate_output:
             map_path = str(Path(target_density_obj[0].path).expanduser().absolute())
             input_pdb_path = str(Path(data[0]).expanduser().resolve())
-            run_validation(map_path, input_pdb_path, target_density_obj[0].resolution)
+            run_validation(map_path, input_pdb_path, target_density_obj[0].resolution, "metrics_in")
             output_pdb_path = str(Path(output_path).expanduser().absolute())
-            run_validation(map_path, output_pdb_path, target_density_obj[0].resolution)
+            run_validation(map_path, output_pdb_path, target_density_obj[0].resolution, "metrics_out")
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")

@@ -14,7 +14,6 @@ max_tokens=1000
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Set PYTHONPATH to include project root so CryoNetRefine package can be found
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH}"
-checkpoint="${SCRIPT_DIR}/params/CryoNet.Refine_model.pt"
 echo "Starting CryoNet.Refine..."
 echo "Input: $input_pdb_path"
 echo "Target density: $target_density"
@@ -29,7 +28,6 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --resolution $resolution \
     --out_dir $out_dir \
     --out_suffix CryoNet.Refine \
-    --checkpoint $checkpoint \
     --max_tokens $max_tokens \
     # --validate_output \
  

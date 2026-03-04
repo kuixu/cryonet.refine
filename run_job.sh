@@ -37,7 +37,6 @@ date >$log;
 max_tokens=1000
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-checkpoint="${SCRIPT_DIR}/params/cryonet.refine_model_checkpoint_best26.pt"
 echo "Starting CryoNet.Refine..."
 echo "Input model   : $cif"
 echo "Target density: $map"
@@ -52,7 +51,6 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --resolution $res \
     --out_dir $d \
     --out_suffix CryoNet.Refine \
-    --checkpoint $checkpoint \
     --max_tokens $max_tokens \
     --validate_output \
  

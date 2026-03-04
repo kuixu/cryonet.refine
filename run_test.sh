@@ -13,8 +13,16 @@ mkdir -p "${OUTPUT_DIR}"
 
 # Download test data
 echo "Downloading test data..."
-wget https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/0775_af3.cif -O "${EXAMPLES_DIR}/0775_af3.cif"
-wget https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/0775.mrc -O "${EXAMPLES_DIR}/0775.mrc"
+if [ ! -f "${EXAMPLES_DIR}/0775_af3.cif" ]; then
+    wget https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/0775_af3.cif -O "${EXAMPLES_DIR}/0775_af3.cif"
+else
+    echo "0775_af3.cif already exists, skipping download"
+fi
+if [ ! -f "${EXAMPLES_DIR}/0775.mrc" ]; then
+    wget https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/0775.mrc -O "${EXAMPLES_DIR}/0775.mrc"
+else
+    echo "0775.mrc already exists, skipping download"
+fi
 
 # Check if downloads were successful
 if [ ! -f "${EXAMPLES_DIR}/0775_af3.cif" ]; then
@@ -35,9 +43,6 @@ MAX_TOKENS=1000
 # Set PYTHONPATH to include project root
 export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH}"
 
-# Checkpoint path
-checkpoint="${SCRIPT_DIR}/params/cryonet.refine_model_checkpoint_best26.pt"
-
 # Input structure file
 input_pdb="${EXAMPLES_DIR}/0775_af3.cif"
 map_file="${EXAMPLES_DIR}/0775.mrc"
@@ -56,9 +61,8 @@ CUDA_VISIBLE_DEVICES=0 python "${SCRIPT_DIR}/main.py" \
     --target_density "${map_file}" \
     --resolution ${RESOLUTION} \
     --out_dir "${OUTPUT_DIR}" \
-    --out_suffix CryoNet.Refine \
-    --checkpoint "${checkpoint}" \
     --max_tokens ${MAX_TOKENS} \
-    --recycles ${RECYCLES}
+    --recycles ${RECYCLES} \
+    --validate_output \
 
 echo "CryoNet.Refine test completed!"

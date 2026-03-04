@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import json
 import shlex
+from .vcx2json import vcx2json
 
 phenix_env = "/opt/phenix-1.21.1-5286/phenix_env.sh"
 # ChimeraX: optional env script to source before running; executable path or name
@@ -747,7 +748,7 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         logger.error(traceback.format_exc())
         return False
 
-def run_validation(map_path: str, pdb_path: str, r: float):
+def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "metrics"):
     # Be robust to Path-like inputs from callers
     map_path = str(map_path)
     pdb_path = str(pdb_path)
@@ -848,6 +849,7 @@ def run_validation(map_path: str, pdb_path: str, r: float):
         _write_vcx_from_metrics(vcx_path, pdb_id=emdb, metrics_dict=metrics_dict)
         ret = 0
 
+    vcx2json(vcx_path, key=metrics_key)
     if ret == 0 and os.path.exists(log_path):
         return True, log_path
     else:
