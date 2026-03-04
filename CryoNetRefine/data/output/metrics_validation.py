@@ -316,9 +316,20 @@ def _safe_float(value_str: str) -> float | None:
     except (ValueError, AttributeError):
         return None
 
+def _safe_int(value_str: str) -> int | None:
+    """
+    Safely convert string to int. Returns None if value is "None", empty, or invalid.
+    """
+    if not value_str or value_str.strip().lower() in ("none", ""):
+        return None
+    try:
+        return int(value_str.strip())
+    except (ValueError, AttributeError):
+        return None
 
 def parse_vc(ccfile, per_chain_cc=False):
 
+    chains, atoms, atoms_H, residues, residues_aa, residues_na, water, ligands = None, None, None, None, None, None, None, None
     CC_mask, CC_volume, CC_peaks, CC_box = None, None, None, None
     CC_mc, CC_sc = None, None
     clashscore = None
@@ -332,9 +343,7 @@ def parse_vc(ccfile, per_chain_cc=False):
     chain_cc = {}
     chain_cc_region = False
     Bond, Angle, Chirality, Planarity, Dihedral = None, None, None, None, None
-    # if per_chain_cc :
-    #     Per chain:
-    rama_z = None
+    rama_z,rama_z_helix, rama_z_sheet, rama_z_loop = None, None, None, None
     molprobity_score = None
     emringer_score = None
     with open(ccfile, "r") as f:
@@ -345,7 +354,23 @@ def parse_vc(ccfile, per_chain_cc=False):
         TWISTED_PROLINE = 0
         TWISTED_GENERAL = 0
         for idx in range(len(output)):
-            if output[idx].startswith("    All-atom Clashscore"):
+            # Model properties
+            if output[idx].startswith("     all atoms      :"):
+                atoms = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     H or D atoms   :"):
+                atoms_H = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     chains         :"):
+                chains = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     a.a. residues  :"):
+                residues_aa = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     nucleotides    :"):
+                residues_na = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     water          :"):
+                water = _safe_int(output[idx].split(":")[1].strip())
+            elif output[idx].startswith("     other (ligands):"):
+                ligands = _safe_int(output[idx].split(":")[1].strip())
+            # Geometrics
+            elif output[idx].startswith("    All-atom Clashscore"):
                 clashscore = _safe_float(output[idx].split(":")[1].strip())
             elif output[idx].startswith("    Ramachandran Plot:"):
                 is_rama_outliers = True
@@ -398,6 +423,12 @@ def parse_vc(ccfile, per_chain_cc=False):
                 Dihedral = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
             elif output[idx].startswith("    whole:"):
                 rama_z = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
+            elif output[idx].startswith("    helix:"):
+                rama_z_helix = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
+            elif output[idx].startswith("    sheet:"):
+                rama_z_sheet = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
+            elif output[idx].startswith("    loop :"):
+                rama_z_loop = _safe_float(output[idx].split(":")[1].strip().split()[0].strip())
 
             elif output[idx].startswith("    Cbeta Deviations :"):
                 cbeta_deviations = _safe_float(
@@ -440,20 +471,27 @@ def parse_vc(ccfile, per_chain_cc=False):
                 chain_cc_region = True
             elif output[idx].startswith("Side chain:"):
                 CC_sc = _safe_float(output[idx + 2].strip().split()[0])
-            # 添加 MolProbity score 解析
             elif "MolProbity score" in output[idx] and "=" in output[idx]:
-                # 处理格式: "  MolProbity score      =   2.48"
                 parts = output[idx].split("=")
                 if len(parts) >= 2:
                     molprobity_score = _safe_float(parts[1].strip())
-            # EMRinger Score（phenix.emringer 输出，可追加到 .vc）
             elif "EMRinger Score:" in output[idx]:
-                # 格式: "EMRinger Score: 2.523319"
                 emringer_score = _safe_float(
                     output[idx].split("EMRinger Score:")[1].strip().split()[0]
                 )
     # import pdb;pdb.set_trace()
+    if residues_aa is not None and residues_na is not None:
+        residues = residues_aa + residues_na
+        
     return {
+        "chains": chains,
+        "atoms": atoms,
+        "atoms_H": atoms_H,
+        "residues": residues,
+        "residues_aa": residues_aa,
+        "residues_na": residues_na,
+        "water": water,
+        "ligands": ligands,
         "CC_mask": CC_mask,
         "CC_volume": CC_volume,
         "CC_peaks": CC_peaks,
@@ -479,6 +517,9 @@ def parse_vc(ccfile, per_chain_cc=False):
         "Planarity": Planarity,
         "Dihedral": Dihedral,
         "rama_z": rama_z,
+        "rama_z_helix":rama_z_helix, 
+        "rama_z_sheet":rama_z_sheet, 
+        "rama_z_loop":rama_z_loop,
         "molprobity_score": molprobity_score,  # 添加到返回字典
         "emringer_score": emringer_score,
     }
