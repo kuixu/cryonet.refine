@@ -179,10 +179,10 @@ def compute_qscore_chimerax(
             flags=re.IGNORECASE,
         )
         if not m:
-            return float("nan")
+            return -100
         return float(m.group(1))
     except Exception:
-        return float("nan")
+        return -100
 
 
 def _is_finite_number(x) -> bool:
@@ -309,10 +309,13 @@ def _safe_float(value_str: str) -> float | None:
     """
     Safely convert string to float. Returns None if value is "None", empty, or invalid.
     """
-    if not value_str or value_str.strip().lower() in ("none", ""):
+    if not value_str or value_str.strip().lower() in ("none", "") or value_str.strip().lower() in ("nan", ""):
         return None
     try:
-        return float(value_str.strip())
+        a = float(value_str.strip())
+        if (isinstance(a, float) and math.isnan(a)):
+            return None
+        return a
     except (ValueError, AttributeError):
         return None
 
@@ -482,6 +485,11 @@ def parse_vc(ccfile, per_chain_cc=False):
     # import pdb;pdb.set_trace()
     if residues_aa is not None and residues_na is not None:
         residues = residues_aa + residues_na
+    
+    # Handle None and NaN for emringer_score
+    import math
+    if emringer_score is None :
+        emringer_score = -100
         
     return {
         "chains": chains,
@@ -789,6 +797,19 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         logger.error(traceback.format_exc())
         return False
 
+def pdb_to_cif(pdb_path, cif_path):
+    cmd = (
+            f"open {pdb_path};save {cif_path} #1;exit; "
+        )
+    cp = subprocess.run(
+            [chimerax_cmd, "--nogui", "--cmd", cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    
+
 def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "metrics"):
     # Be robust to Path-like inputs from callers
     map_path = str(map_path)
@@ -796,6 +817,19 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
     wkdir = os.path.dirname(pdb_path)
     # emdb = os.path.basename(pdb_path).replace(in_suffix+".pdb", "")
     emdb = os.path.basename(pdb_path).split(".")[0].split("_")[0].split("-")[0]
+    
+    # If pdb_path with suffix of .pdb, then perform pdb_to_cif
+    if pdb_path.endswith(".pdb"):
+        cif_path = pdb_path.replace(".pdb", ".cif")
+        if not os.path.exists(cif_path):
+            logger.info(f"Converting {pdb_path} to CIF format: {cif_path}")
+            pdb_to_cif(pdb_path, cif_path)
+        # Use the CIF file for validation
+        if os.path.exists(cif_path):
+            pdb_path = cif_path
+        else:
+            logger.warning(f"Failed to convert {pdb_path} to CIF, using original file")
+    # if pdb_path with suffix of .pdb, then perform pdb_to_cif
 
     # log_path=pdb_path.replace(".pdb", ".vc")
     log_path = pdb_path.replace(".pdb", ".vc").replace(".cif", ".vc")
