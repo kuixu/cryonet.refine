@@ -349,6 +349,7 @@ def parse_vc(ccfile, per_chain_cc=False):
     rama_z,rama_z_helix, rama_z_sheet, rama_z_loop = None, None, None, None
     molprobity_score = None
     emringer_score = None
+    cablam_outliers = None
     with open(ccfile, "r") as f:
         output = f.readlines()
         # output = output.split('\n')
@@ -482,6 +483,13 @@ def parse_vc(ccfile, per_chain_cc=False):
                 emringer_score = _safe_float(
                     output[idx].split("EMRinger Score:")[1].strip().split()[0]
                 )
+            elif (
+                output[idx].startswith("SUMMARY:")
+                and "have outlier conformations." in output[idx]
+            ):
+                m = re.search(r"\(([0-9]*\.?[0-9]+)%\)", output[idx])
+                if m:
+                    cablam_outliers = _safe_float(m.group(1))
     # import pdb;pdb.set_trace()
     if residues_aa is not None and residues_na is not None:
         residues = residues_aa + residues_na
@@ -530,6 +538,7 @@ def parse_vc(ccfile, per_chain_cc=False):
         "rama_z_loop":rama_z_loop,
         "molprobity_score": molprobity_score,  # 添加到返回字典
         "emringer_score": emringer_score,
+        "cablam_outliers": cablam_outliers,
     }
 
 
@@ -647,7 +656,10 @@ def _needs_vcx_update(vcx_path: str) -> bool:
     if is_none_vcx(vcx_path):
         return True
     # Ensure we have required fields (value may be NaN, but key must exist)
-    return not vcx_has_fields(vcx_path, ("QScore", "CSscore", "emringer_score"))
+    return not vcx_has_fields(
+        vcx_path,
+        ("QScore", "CSscore", "emringer_score", "cablam_outliers"),
+    )
 
 
 def is_none_vcx(path):
@@ -891,12 +903,40 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
         else:
             logger.info(f"EMRinger finished for {emdb} (time={dt_em:.2f}s)")
         need_vcx_update = True
+
+    # Ensure CaBLAM summary is present in the same .vc log
+    need_cablam = False
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "r", errors="ignore") as f:
+                txt = f.read()
+                need_cablam = (
+                    "CaBLAM found" not in txt
+                    or "have outlier conformations." not in txt
+                )
+        except Exception:
+            need_cablam = True
+    if need_cablam:
+        logger.info(f"Computing CaBLAM via phenix.cablam for {emdb}...")
+        cmd4 = f"phenix.cablam {shlex.quote(pdb_path)}"
+        logger.info(cmd4)
+        t_cb = time.perf_counter()
+        ret_cb = _run_bash_with_env(cmd4, cwd=wkdir, log_path=log_path)
+        dt_cb = time.perf_counter() - t_cb
+        if ret_cb != 0:
+            logger.warning(f"phenix.cablam failed for {emdb} (exit={ret_cb}, time={dt_cb:.2f}s)")
+            ret = ret_cb
+        else:
+            logger.info(f"CaBLAM finished for {emdb} (time={dt_cb:.2f}s)")
+        need_vcx_update = True
     # Always (re)build vcx when requested, in THIS function only.
     if need_vcx_update and os.path.exists(log_path):
         metrics_dict = parse_vc(log_path, per_chain_cc=False)
         # Ensure required field is present even if parsing failed
         if metrics_dict.get("emringer_score", None) is None:
             metrics_dict["emringer_score"] = float("nan")
+        if metrics_dict.get("cablam_outliers", None) is None:
+            metrics_dict["cablam_outliers"] = float("nan")
         try:
             ems = float(metrics_dict.get("emringer_score"))
             if math.isfinite(ems):

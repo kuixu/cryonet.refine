@@ -15,12 +15,16 @@ metrics=[
     "CC_mask","CC_volume","CC_peaks","CC_box","CC_mc","CC_sc",
     "rama_favored","rotamer_favored","clashscore","rama_outliers",
     "rotamer_outliers","cbeta_deviations","Bond","Angle","rama_z",
+    "cablam_outliers",
     "cis_proline","cis_general","twisted_proline","twisted_general",
     "Chirality","Planarity","Dihedral","molprobity_score",
     "emringer_score","QScore","CSscore"
 
     ]
-reversed_metrics=["clashscore","rama_outliers","rotamer_outliers","cbeta_deviations","Bond","Angle","rama_z"]
+reversed_metrics=[
+    "clashscore","rama_outliers","rotamer_outliers","cbeta_deviations",
+    "Bond","Angle","rama_z","cablam_outliers"
+]
 ref_percentiles={
     "CC_mask_ref_perc": 0.22,
     "CC_volume_ref_perc": 0.25,
