@@ -114,7 +114,7 @@ def vcx2json(vcx_path, status_path='', key='metrics'):
 
     vc_dict = parse_vcx(vcx_path, key)
 
-    update_status(status_path, jdict={key: vc_dict[key]})
+    update_status(status_path, jdict={key: vc_dict[key],'valfile':vcx_path})
 
 if __name__ == "__main__":
     # user defined
