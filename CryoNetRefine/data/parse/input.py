@@ -47,11 +47,11 @@ class RefineArgs:
         "rama": 500.0,
         "rotamer": 500.0,
         "bond": 50,
-        "angle": 1,
+        "angle": 0.25,
         "cbeta": 1.0,
-        "ramaz": 1.00,
-        "clash": 0.1,
-        "nonbonded" : 100,
+        "ramaz": 0.1,
+        "clash": 0.01,
+        "nonbonded" : 50,
     })
     use_global_clash: bool = False
     data_dir: str | None = None

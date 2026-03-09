@@ -113,15 +113,15 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
 @click.option("--recycles", type=int, help="Number of refinement recycles", default=300)
 @click.option("--enable_cropping", is_flag=True, help="Enable cropping for large structures", default=True)
 @click.option("--cond_early_stop", type=str, help="Condition early stop", default="loss")
-@click.option("--clash", type=float, help="Weight for clash loss", default=0.1)
-@click.option("--nonbonded", type=float, help="Weight for nonbonded loss", default=100)
+@click.option("--clash", type=float, help="Weight for clash loss", default=0.01)
+@click.option("--nonbonded", type=float, help="Weight for nonbonded loss", default=50)
 @click.option("--den", type=float, help="Weight for density loss", default=20.0)
 @click.option("--rama", type=float, help="Weight for rama loss", default=500.0)
 @click.option("--rotamer", type=float, help="Weight for rotamer loss", default=500.0)
 @click.option("--bond", type=float, help="Weight for bond loss", default=50)
-@click.option("--angle", type=float, help="Weight for angle loss", default=1)
+@click.option("--angle", type=float, help="Weight for angle loss", default=0.25)
 @click.option("--cbeta", type=float, help="Weight for cbeta loss", default=50.0)
-@click.option("--ramaz", type=float, help="Weight for ramaz loss", default=1.00)
+@click.option("--ramaz", type=float, help="Weight for ramaz loss", default=0.1)
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-3)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
@@ -140,15 +140,15 @@ def refine(
     gamma_0: float = -0.5,
     enable_cropping: bool = True,
     cond_early_stop: str = "loss",
-    clash: int = 0.1,
-    nonbonded: int = 100,
+    clash: int = 0.01,
+    nonbonded: int = 50,
     den: int = 20.0,
     rama: int = 500.0,
     rotamer: int = 500.0,
     bond: int = 50,
-    angle: int = 1,
+    angle: int = 0.25,
     cbeta: int = 1.0,
-    ramaz: int = 1.00,
+    ramaz: int = 0.1,
     learning_rate: float = 1.8e-4,
     max_norm_sigmas_value: float = 1.0,
     num_workers: int = 0,
