@@ -8,9 +8,10 @@ import numpy as np
 
 
 # percent_path="bin/percent.tsv"
-percent_path = "CryoNetRefine/data/output/percent.tsv"
+# Resolve relative to this file so running from any cwd works.
+percent_path = Path(__file__).resolve().parent / "percent.tsv"
 # import percentile reference values
-percentiles=pd.read_csv(percent_path,sep="\t",header=0)
+percentiles = pd.read_csv(percent_path, sep="\t", header=0)
 metrics=[
     "CC_mask","CC_volume","CC_peaks","CC_box","CC_mc","CC_sc",
     "rama_favored","rotamer_favored","clashscore","rama_outliers",

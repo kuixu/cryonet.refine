@@ -10,11 +10,28 @@ from pathlib import Path
 import re
 import json
 import shlex
-from .vcx2json import vcx2json
+try:
+    # Package import (e.g. imported as CryoNetRefine.data.output.metrics_validation)
+    from .vcx2json import vcx2json
+except ImportError:
+    # Script import fallback (e.g. python metrics_validation.py ...)
+    from vcx2json import vcx2json
 
-phenix_env = "/opt/phenix-1.21.1-5286/phenix_env.sh"
-# ChimeraX: optional env script to source before running; executable path or name
-chimerax_cmd = "/usr/bin/chimerax"  # full path or "chimerax" to use PATH
+DEFAULT_PHENIX_ENV = "/opt/phenix-1.21.1-5286/phenix_env.sh"
+DEFAULT_CHIMERAX_CMD = "/usr/bin/chimerax"
+# Read from environment first to avoid hard-coded tool paths in callers.
+phenix_env = os.environ.get("PHENIX_ENV", DEFAULT_PHENIX_ENV)
+chimerax_cmd = os.environ.get("CHIMERAX_CMD", DEFAULT_CHIMERAX_CMD)
+
+
+def _effective_phenix_env() -> str:
+    """Resolve Phenix env path at call time (env var has highest priority)."""
+    return os.environ.get("PHENIX_ENV", phenix_env)
+
+
+def _effective_chimerax_cmd() -> str:
+    """Resolve ChimeraX command at call time (env var has highest priority)."""
+    return os.environ.get("CHIMERAX_CMD", chimerax_cmd)
 
 
 def _run_bash_with_env(cmd: str, *, cwd: str | Path | None = None, log_path: str | Path | None = None) -> int:
@@ -25,7 +42,7 @@ def _run_bash_with_env(cmd: str, *, cwd: str | Path | None = None, log_path: str
     - log_path: if provided, append stdout+stderr to this file (binary-safe)
     """
     # Use bash because `/bin/sh` may not support `source`.
-    env_src = f"source {shlex.quote(phenix_env)}"
+    env_src = f"source {shlex.quote(_effective_phenix_env())}"
     full = f"{env_src} && {cmd}"
     stdout_target = None
     try:
@@ -57,6 +74,18 @@ def parse_args():
     parse.add_argument('pdb_file', type=str, help='pdb file for refinement')  
     parse.add_argument('map_file', type=str, help='map file for refinement')  
     parse.add_argument("-r","--resolution",type=float,help="resolution of map file (optional)",required=False,default=None)
+    parse.add_argument(
+        "--phenix_env",
+        type=str,
+        help="Phenix env script path (overrides PHENIX_ENV env var)",
+        default=None,
+    )
+    parse.add_argument(
+        "--chimerax_cmd",
+        type=str,
+        help="ChimeraX executable path/name (overrides CHIMERAX_CMD env var)",
+        default=None,
+    )
     args = parse.parse_args()
     return args
 BFACTOR_DEFAULT = "1.00 "  # default b-factor
@@ -155,7 +184,7 @@ def compute_qscore_chimerax(
     Returns NaN if ChimeraX/qscore fails or output can't be parsed.
     """
     if chimerax_cmd is None:
-        chimerax_cmd = globals()["chimerax_cmd"]
+        chimerax_cmd = _effective_chimerax_cmd()
     pdb_path = str(pdb_path)
     map_path = str(map_path)
     try:
@@ -674,25 +703,19 @@ def is_none_vcx(path):
     else:
         return True
 
-
 def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
     """
-    Reset bfactor values in PDB/CIF file to a default value using gemmi
-    Ensures auth_comp_id field is present (copied from label_comp_id if missing).
-
-    NOTE:
-    - gemmi.cif.Loop does not support assigning to .tags/.values (read-only properties in some builds).
-    - To stay robust across gemmi versions, we:
-      1) use gemmi to reset B-factors and write a fresh mmCIF to a temp file
-      2) post-process the written mmCIF text to inject _atom_site.auth_comp_id if missing
+    Reset bfactor values in PDB/CIF file to a default value using gemmi.
+    For mmCIF, enforce _atom_site.auth_comp_id via gemmi CIF API
+    (copied from label_comp_id if missing).
     """
     try:
         import gemmi
         import os
         import shutil
-        import shlex
         
         # Read structure using gemmi
+
         structure = gemmi.read_structure(pdb_path)
         
         # Convert bfactor_value to float
@@ -712,93 +735,53 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
             tmp_path = pdb_path + ".tmp"
             bak_path = pdb_path + ".bak"
 
-            # Write via gemmi first
+            # Write mmCIF using gemmi, and enforce auth_comp_id by CIF API.
             doc = structure.make_mmcif_document()
-            doc.write_file(tmp_path)
+            block = doc.sole_block()
+            atom_site = block.find_mmcif_category("_atom_site.")
+            if atom_site is None or atom_site.width() == 0:
+                raise RuntimeError("mmCIF has no _atom_site category after gemmi export")
 
-            # Post-process written CIF to ensure _atom_site.auth_comp_id exists.
-            # We copy values from _atom_site.label_comp_id.
-            with open(tmp_path, "r") as f:
-                lines = f.readlines()
+            tags_full = list(atom_site.tags)
+            tags_short = [t.split(".", 1)[1] if "." in t else t for t in tags_full]
+            has_auth_comp_id = "auth_comp_id" in tags_short
 
-            out_lines = []
-            i = 0
-            while i < len(lines):
-                line = lines[i]
-                out_lines.append(line)
-                if line.strip() != "loop_":
-                    i += 1
-                    continue
+            if not has_auth_comp_id:
+                if "label_comp_id" not in tags_short:
+                    raise RuntimeError("_atom_site.label_comp_id missing; cannot populate auth_comp_id")
 
-                # Peek forward for an _atom_site loop
-                j = i + 1
-                tags = []
-                while j < len(lines) and lines[j].lstrip().startswith("_atom_site."):
-                    tags.append(lines[j].strip())
-                    j += 1
+                label_idx = tags_short.index("label_comp_id")
+                if "auth_asym_id" in tags_short:
+                    insert_pos = tags_short.index("auth_asym_id")
+                else:
+                    insert_pos = label_idx + 1
 
-                if not tags:
-                    i += 1
-                    continue
+                # Build an ordered column dict and inject auth_comp_id.
+                # Use block.find_values() to stay compatible across gemmi Table variants.
+                # Some builds do not expose Table.length()/row indexing.
+                col_dict = {}
+                if not hasattr(block, "find_values"):
+                    raise RuntimeError("Current gemmi build lacks find_values()")
+                for name in tags_short:
+                    key = f"_atom_site.{name}"
+                    col_dict[name] = list(block.find_values(key))
 
-                # We already appended 'loop_' line; remove the already appended tag lines
-                # and re-emit them with possible insertion.
-                out_lines = out_lines[:-1]  # remove loop_ we appended, we'll re-add below
+                label_vals = col_dict["label_comp_id"]
+                new_col_dict = {}
+                for i, name in enumerate(tags_short):
+                    if i == insert_pos:
+                        new_col_dict["auth_comp_id"] = list(label_vals)
+                    new_col_dict[name] = col_dict[name]
+                if insert_pos == len(tags_short):
+                    new_col_dict["auth_comp_id"] = list(label_vals)
 
-                has_auth_comp_id = any(t == "_atom_site.auth_comp_id" for t in tags)
-                try:
-                    label_idx = tags.index("_atom_site.label_comp_id")
-                except ValueError:
-                    # Can't fix without label_comp_id; just keep original as-is.
-                    out_lines.append("loop_\n")
-                    out_lines.extend([t + "\n" for t in tags])
-                    i += 1
-                    continue
+                if not hasattr(block, "set_mmcif_category"):
+                    raise RuntimeError("Current gemmi build lacks set_mmcif_category()")
+                block.set_mmcif_category("_atom_site.", new_col_dict)
 
-                insert_pos = None
-                if not has_auth_comp_id:
-                    if "_atom_site.auth_asym_id" in tags:
-                        insert_pos = tags.index("_atom_site.auth_asym_id")
-                    else:
-                        insert_pos = label_idx + 1
-                    tags = tags[:insert_pos] + ["_atom_site.auth_comp_id"] + tags[insert_pos:]
-
-                # Emit updated loop header
-                out_lines.append("loop_\n")
-                out_lines.extend([t + "\n" for t in tags])
-
-                # Now copy data rows for this loop.
-                k = j
-                while k < len(lines):
-                    l = lines[k]
-                    s = l.strip()
-                    if s == "" or s.startswith("#") or s == "loop_" or s.startswith("_"):
-                        break
-
-                    if not has_auth_comp_id:
-                        # Insert auth_comp_id token (same as label_comp_id)
-                        parts = shlex.split(l, posix=True)
-                        if len(parts) >= len(tags) - 1:
-                            # parts currently correspond to original tag count
-                            label_val = parts[label_idx]
-                            parts.insert(insert_pos, label_val)
-                            out_lines.append(" ".join(parts) + "\n")
-                        else:
-                            # If parsing weird, keep line as-is
-                            out_lines.append(l)
-                    else:
-                        out_lines.append(l)
-                    k += 1
-
-                # Continue from where we stopped (k)
-                i = k
-                continue
-            # Atom-site loop might have been rewritten; write back
-            # Backup original then replace
             if not os.path.exists(bak_path):
                 shutil.copy2(pdb_path, bak_path)
-            with open(tmp_path, "w") as f:
-                f.writelines(out_lines)
+            doc.write_file(tmp_path)
             os.replace(tmp_path, pdb_path)
         
         logger.info(f"Reset bfactor to {bfactor_value} for {pdb_path}")
@@ -808,13 +791,12 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         import traceback
         logger.error(traceback.format_exc())
         return False
-
 def pdb_to_cif(pdb_path, cif_path):
     cmd = (
             f"open {pdb_path};save {cif_path} #1;exit; "
         )
     cp = subprocess.run(
-            [chimerax_cmd, "--nogui", "--cmd", cmd],
+            [_effective_chimerax_cmd(), "--nogui", "--cmd", cmd],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -858,7 +840,7 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
     ret = 0
     if need_phenix_run:
         # Reset bfactor before validation (skip for CIF files to avoid format issues)
-        logger.info(f"Reset bfactor to {BFACTOR_DEFAULT.strip()} for {pdb_path}")
+        # logger.info(f"Reset bfactor to {BFACTOR_DEFAULT.strip()} for {pdb_path}")
         reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
 
         cmd0 = f"rm -f {log_path}; "
@@ -891,7 +873,7 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
     if need_emringer:
         logger.info(f"Computing EMRinger via phenix.emringer for {emdb}...")
         # Reset bfactor before emringer to be consistent
-        reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
+        # reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
         cmd3 = f"phenix.emringer {shlex.quote(pdb_path)} {shlex.quote(map_path)}"
         logger.info(cmd3)
         t_em = time.perf_counter()
@@ -994,6 +976,10 @@ def run_validation_or_not(pdb_path):
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.phenix_env:
+        phenix_env = args.phenix_env
+    if args.chimerax_cmd:
+        chimerax_cmd = args.chimerax_cmd
     pdb_path = args.pdb_file
     # Extract pdb-id (first four characters)
     filename = os.path.basename(pdb_path)  # e.g., "6cvm_te3_a.cif"

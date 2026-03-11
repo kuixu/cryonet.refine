@@ -4,6 +4,13 @@
 # This script runs validation twice: once for the input structure, once for the refined output
 
 j=$1
+phenix_env="/opt/phenix-1.21.1-5286/phenix_env.sh"
+chimerax_cmd="/usr/bin/chimerax"
+
+if [ -z "$j" ] || [ -z "$phenix_env" ] || [ -z "$chimerax_cmd" ]; then
+    echo "Usage: $0 <job_id> <phenix_env> <chimerax_cmd>"
+    exit 1
+fi
 
 d=/data1/jobs/$j
 name=$(cat $d/name.list)
@@ -26,6 +33,8 @@ echo "Target density: $map"
 echo "Resolution    : $res"
 echo "Output model  : $out"
 echo "Log file      : $log"
+echo "Phenix env    : $phenix_env"
+echo "ChimeraX cmd  : $chimerax_cmd"
 
 date > $log
 rm  ${out_dir}.vc ${out_dir}.vcx
@@ -39,6 +48,8 @@ CUDA_VISIBLE_DEVICES=0 python val.py \
     "$out" \
     --resolution "$res" \
     --output_dir "$d" \
+    --phenix_env "$phenix_env" \
+    --chimerax_cmd "$chimerax_cmd" \
     # >> $log 2>&1
 
 # if [ $? -eq 0 ]; then

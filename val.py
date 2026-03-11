@@ -29,7 +29,17 @@ def save_metrics(metrics: dict, output_path: str) -> None:
 @click.argument("output_pdb_path", type=click.Path(exists=True))
 @click.option("--resolution", type=float, required=True, help="Resolution of the density map")
 @click.option("--output_dir", type=click.Path(exists=False), default="./validation_results", help="Output directory for validation results")
-def validate(map_path: str, input_pdb_path: str, output_pdb_path: str, resolution: float, output_dir: str) -> None:
+@click.option("--phenix_env", type=str, default=None, help="Phenix env script path")
+@click.option("--chimerax_cmd", type=str, default=None, help='ChimeraX executable path or command name')
+def validate(
+    map_path: str,
+    input_pdb_path: str,
+    output_pdb_path: str,
+    resolution: float,
+    output_dir: str,
+    phenix_env: str | None,
+    chimerax_cmd: str | None,
+) -> None:
     """
     Run validation for both input and output structures.
 
@@ -51,7 +61,16 @@ def validate(map_path: str, input_pdb_path: str, output_pdb_path: str, resolutio
     click.echo(f"Output PDB  : {output_pdb_path}")
     click.echo(f"Resolution  : {resolution} Å")
     click.echo(f"Output dir  : {output_dir}")
+    if phenix_env:
+        click.echo(f"Phenix env  : {phenix_env}")
+    if chimerax_cmd:
+        click.echo(f"ChimeraX cmd: {chimerax_cmd}")
     click.echo("=" * 60)
+
+    if phenix_env:
+        os.environ["PHENIX_ENV"] = phenix_env
+    if chimerax_cmd:
+        os.environ["CHIMERAX_CMD"] = chimerax_cmd
 
     # Get base name for output files
     input_name = Path(input_pdb_path).stem

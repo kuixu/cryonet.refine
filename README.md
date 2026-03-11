@@ -106,8 +106,30 @@ sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 ./output
 - `3.6` – Map resolution (Å)
 - `./output` – Output directory where refined models and logs will be written
 
-The script will run the full refinement pipeline and save refined atomic model and its validation metrics into `./output`.
+The script will run the full refinement pipeline and save refined atomic model into `./output`.
 
+### Validation Configuration in `run.sh`
+
+- `run.sh` currently defines:
+  - `phenix_env="/opt/phenix-1.21.1-5286/phenix_env.sh"`
+  - `chimerax_cmd="/usr/bin/chimerax"`
+- You can modify these two variables in `run.sh` to match your local environment.
+- Validation is optional and disabled by default in `run.sh`.  
+  To enable it, uncomment `--validate_output` in the `run.sh`.
+- When validation is enabled, validation outputs are written next to each validated CIF file (same directory), including `.vcx`.
+
+### Run Validation Script Directly
+
+You can also run validation directly (without `run.sh`):
+
+```bash
+python  ./CryoNetRefine/data/output/metrics_validation.py \
+  <pdb_file> <map_file> -r <resolution> \
+  --phenix_env /opt/phenix-1.21.1-5286/phenix_env.sh \
+  --chimerax_cmd /usr/bin/chimerax
+```
+
+This command also writes validation files (`.vcx`) in the same directory as the target CIF/PDB file.
 
 ---
 
