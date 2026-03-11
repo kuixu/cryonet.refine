@@ -104,9 +104,9 @@ sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 ./output
 - `./examples/6ksw_af3.cif` – Input model (PDB/mmCIF) to be refined
 - `./examples/6ksw.mrc` – Input cryo-EM density map
 - `3.6` – Map resolution (Å)
-- `/output` – Output directory where refined models and logs will be written
+- `./output` – Output directory where refined models and logs will be written
 
-The script will run the full refinement pipeline and save refined structures and metrics into `/output`.
+The script will run the full refinement pipeline and save refined atomic model and its validation metrics into `./output`.
 
 
 ---
