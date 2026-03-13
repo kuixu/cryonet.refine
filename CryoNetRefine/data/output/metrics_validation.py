@@ -705,9 +705,7 @@ def is_none_vcx(path):
 
 def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
     """
-    Reset bfactor values in PDB/CIF file to a default value using gemmi.
-    For mmCIF, enforce _atom_site.auth_comp_id via gemmi CIF API
-    (copied from label_comp_id if missing).
+    Reset B-factor values in a PDB/mmCIF file using gemmi.
     """
     try:
         import gemmi
@@ -715,7 +713,6 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         import shutil
         
         # Read structure using gemmi
-
         structure = gemmi.read_structure(pdb_path)
         
         # Convert bfactor_value to float
@@ -735,50 +732,9 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
             tmp_path = pdb_path + ".tmp"
             bak_path = pdb_path + ".bak"
 
-            # Write mmCIF using gemmi, and enforce auth_comp_id by CIF API.
+            # Let gemmi serialize the mmCIF directly. Rebuilding _atom_site
+            # from CIF token values can corrupt quoted atom names such as O5'.
             doc = structure.make_mmcif_document()
-            block = doc.sole_block()
-            atom_site = block.find_mmcif_category("_atom_site.")
-            if atom_site is None or atom_site.width() == 0:
-                raise RuntimeError("mmCIF has no _atom_site category after gemmi export")
-
-            tags_full = list(atom_site.tags)
-            tags_short = [t.split(".", 1)[1] if "." in t else t for t in tags_full]
-            has_auth_comp_id = "auth_comp_id" in tags_short
-
-            if not has_auth_comp_id:
-                if "label_comp_id" not in tags_short:
-                    raise RuntimeError("_atom_site.label_comp_id missing; cannot populate auth_comp_id")
-
-                label_idx = tags_short.index("label_comp_id")
-                if "auth_asym_id" in tags_short:
-                    insert_pos = tags_short.index("auth_asym_id")
-                else:
-                    insert_pos = label_idx + 1
-
-                # Build an ordered column dict and inject auth_comp_id.
-                # Use block.find_values() to stay compatible across gemmi Table variants.
-                # Some builds do not expose Table.length()/row indexing.
-                col_dict = {}
-                if not hasattr(block, "find_values"):
-                    raise RuntimeError("Current gemmi build lacks find_values()")
-                for name in tags_short:
-                    key = f"_atom_site.{name}"
-                    col_dict[name] = list(block.find_values(key))
-
-                label_vals = col_dict["label_comp_id"]
-                new_col_dict = {}
-                for i, name in enumerate(tags_short):
-                    if i == insert_pos:
-                        new_col_dict["auth_comp_id"] = list(label_vals)
-                    new_col_dict[name] = col_dict[name]
-                if insert_pos == len(tags_short):
-                    new_col_dict["auth_comp_id"] = list(label_vals)
-
-                if not hasattr(block, "set_mmcif_category"):
-                    raise RuntimeError("Current gemmi build lacks set_mmcif_category()")
-                block.set_mmcif_category("_atom_site.", new_col_dict)
-
             if not os.path.exists(bak_path):
                 shutil.copy2(pdb_path, bak_path)
             doc.write_file(tmp_path)
