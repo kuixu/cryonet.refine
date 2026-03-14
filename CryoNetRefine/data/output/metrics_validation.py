@@ -706,6 +706,8 @@ def is_none_vcx(path):
 def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
     """
     Reset B-factor values in a PDB/mmCIF file using gemmi.
+    For mmCIF, also clear formal charges to avoid Phenix electron
+    scattering-table errors such as O1-.
     """
     try:
         import gemmi
@@ -718,15 +720,19 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         # Convert bfactor_value to float
         bfactor_float = float(bfactor_value)
         
+        is_pdb = pdb_path.lower().endswith(".pdb")
+
         # Iterate through all models, chains, residues, and atoms
         for model in structure:
             for chain in model:
                 for residue in chain:
                     for atom in residue:
                         atom.b_iso = bfactor_float
+                        if not is_pdb:  # for mmCIF, clear formal charges to avoid Phenix electron scattering-table errors such as O1-.
+                            atom.charge = 0
         
         # Write back to file
-        if pdb_path.endswith(".pdb"):
+        if is_pdb:
             structure.write_minimal_pdb(pdb_path)
         else:
             tmp_path = pdb_path + ".tmp"
@@ -734,6 +740,7 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
 
             # Let gemmi serialize the mmCIF directly. Rebuilding _atom_site
             # from CIF token values can corrupt quoted atom names such as O5'.
+            # Clearing atom.charge makes _atom_site.pdbx_formal_charge write as '?'.
             doc = structure.make_mmcif_document()
             if not os.path.exists(bak_path):
                 shutil.copy2(pdb_path, bak_path)
