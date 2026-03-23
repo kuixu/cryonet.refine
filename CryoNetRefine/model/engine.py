@@ -240,7 +240,6 @@ class Engine:
             total_loss += crop_loss / num_crops
             # Backward pass
             (crop_loss / num_crops).backward(retain_graph=False)
-            
             # Clean up
             del crop_loss, crop_predicted_coords, crop_batch, crop_token_indices, crop_atom_mask
             if torch.cuda.is_available():

@@ -127,6 +127,7 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 @click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
 @click.option("--validate_output", is_flag=True, help="Validate output flag", default=False)
+@click.option("--ignore_origin", is_flag=True, help="Ignore density origin flag", default=False)
 def refine(
     data: str,
     out_dir: str,
@@ -154,6 +155,7 @@ def refine(
     num_workers: int = 0,
     use_global_clash: bool = True,
     validate_output: bool = False,
+    ignore_origin: bool = False,
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -267,13 +269,16 @@ def refine(
     # Perform refinement for each structure
     for batch_idx, batch in enumerate(tqdm(dataloader, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx}")
-        coords0 = batch["template_coords"].squeeze(0).squeeze(0)   # [12160, 3]
-        coords0 = coords0.unsqueeze(0)                             # [1, 12160, 3]
-        # NOTE:
-        # Do NOT move the whole batch to GPU here.
-        # Each crop will be moved to GPU individually inside the Engine,
-        # so that GPU memory is only used for the current crop.
+        batch['template_coords'] = batch['template_coords']
+        
+        if ignore_origin:
+            offset = target_density_obj[0].offset
+            batch['template_coords'] = batch['template_coords'] - offset.to(batch['template_coords'].device)
+            target_density_obj[0].offset = torch.tensor([0.0, 0.0, 0.0],device = target_density_obj[0].device)
         refined_coords, _ = refiner.refine(batch, target_density_obj, processed.template_dir, out_dir, cond_early_stop=cond_early_stop)
+        if ignore_origin:
+            refined_coords = refined_coords + offset.to(refined_coords.device)
+        
         # Get best results info from refiner
         best_iteration = getattr(refiner, 'best_iteration', None)
         best_loss = getattr(refiner, 'best_loss', None)

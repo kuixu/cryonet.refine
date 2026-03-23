@@ -119,9 +119,6 @@ class DiffusionModule(Module):
         feats,
         diffusion_conditioning,
         multiplicity=1,
-        cc_movement_scale: float = 1.0,
-        cc_min_scale: float = 0.25,
-        cc_max_scale: float = 1.5,
     ):
         s_inputs_d = s_inputs.clone().detach()
         s_trunk_d = s_trunk.clone().detach()
@@ -368,6 +365,7 @@ class AtomDiffusion(Module):
                         ),
                     )
                     atom_coords_denoised[sample_ids_chunk] = atom_coords_denoised_chunk 
+                
                 atom_coords = atom_coords_denoised
                 if step_idx == 0:
                     break # one-step diffusion

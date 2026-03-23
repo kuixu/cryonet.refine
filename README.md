@@ -108,6 +108,9 @@ sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 ./output
 
 The script will run the full refinement pipeline and save refined atomic model into `./output`.
 
+> ⚠️ **Large density map origin (`--ignore_origin`)**  
+> A very large map origin can hurt refinement. With `--ignore_origin`, the density and atomic coordinates are shifted together so they are aligned near the origin(0,0,0) during refinement, which removes that offset effect. Uncomment `--ignore_origin` in `run.sh` when needed.
+
 ### Validation Configuration in `run.sh`
 
 - `run.sh` currently defines:
