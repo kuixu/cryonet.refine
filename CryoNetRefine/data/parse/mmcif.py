@@ -1077,7 +1077,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     )
     # Parse chains
     chains: list[ParsedChain] = []
-    breakpoint()
     for raw_chain in structure[0].subchains():
         # Check chain type
         subchain_id = raw_chain.subchain_id()
