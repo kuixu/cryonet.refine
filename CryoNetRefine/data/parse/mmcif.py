@@ -1029,6 +1029,11 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
 
     # Load structure object
     structure = gemmi.make_structure_from_block(block)
+    # Some minimal CIFs only have atom_site records and no entity categories.
+    # In that case, infer entities from coordinates so downstream subchain->entity
+    # mapping does not end up empty.
+    if not structure.entities:
+        structure.setup_entities()
 
     # Clean up the structure
     structure.merge_chain_parts()
@@ -1072,6 +1077,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     )
     # Parse chains
     chains: list[ParsedChain] = []
+    breakpoint()
     for raw_chain in structure[0].subchains():
         # Check chain type
         subchain_id = raw_chain.subchain_id()
