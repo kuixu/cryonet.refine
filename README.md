@@ -96,13 +96,13 @@ Make sure this is done inside the `cryonet.refine` conda environment.
 From the project root (`cryonet.refine`), run:
 
 ```bash
-sh ./run.sh ./examples/6ksw_af3.cif ./examples/6ksw.mrc 3.6 ./output
+sh ./run.sh ./examples/0775_af3.cif ./examples/emd_0775.map 3.6 ./output
 ```
 
 ### Arguments
 
-- `./examples/6ksw_af3.cif` – Input model (PDB/mmCIF) to be refined
-- `./examples/6ksw.mrc` – Input cryo-EM density map
+- `./examples/0775_af3.cif` – Input model (PDB/mmCIF) to be refined path. (Download the AlphaFold 3 + matchmaker structure model from [0775_af3.cif](https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/0775_af3.cif))
+- `./examples/emd_0775.map` – Input cryo-EM density map path. (Download the density map file from [EMD-0775](https://www.ebi.ac.uk/emdb/EMD-0775))
 - `3.6` – Map resolution (Å)
 - `./output` – Output directory where refined models and logs will be written
 
@@ -144,7 +144,6 @@ cryonet.refine/
 │   ├── libs/               # Geometry, protein representation, density utilities
 │   ├── model/              # Network architecture and refinement engine
 │   └── data/               # Feature generation, IO, and preprocessing
-├── examples/               # Example input structure and map
 ├── params/                 # Model checkpoints (auto-downloaded if missing)
 ├── run.sh                  # Convenience script for running refinement
 ├── main.py                 # Main refinement script
