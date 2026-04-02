@@ -99,22 +99,9 @@ def probe_style_clash_loss(
 
     # Optimization (big): keep only valid atoms for clash computation
     coords = coords_full[:, valid_idx, :]  # [1, N_valid, 3]
-    N_orig = N
     N = coords.shape[1]
     # After trimming, all remaining atoms are valid
     atom_mask = torch.ones((1, N), dtype=torch.bool, device=device)
-
-    n_valid = int(N)
-    use_chunk = N > chunk_size
-    # if torch.cuda.is_available() and device.type == "cuda":
-    #     alloc_gb = torch.cuda.memory_allocated(device) / (1024 ** 3)
-    #     reserved_gb = torch.cuda.memory_reserved(device) / (1024 ** 3)
-    #     max_alloc_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
-    #     print(
-    #         f"[probe_style_clash_loss] N_orig={N_orig}, L={L}, N_valid={n_valid}, "
-    #         f"N_valid>chunk_size({chunk_size})={use_chunk} | GPU {device}: "
-    #         f"alloc={alloc_gb:.2f} GB, reserved={reserved_gb:.2f} GB, max_alloc={max_alloc_gb:.2f} GB"
-    #     )
 
     ref_element = feats["ref_element"].float().to(device)   # [1, N_pad, E]
     ref_element = ref_element[:, :L, :][:, valid_idx, :]    # [1, N_valid, E]

@@ -54,23 +54,41 @@ def _normalize_input_paths(input_path: PathInput) -> List[Path]:
         raise ValueError("input_path is empty")
     return paths
 
+def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
+    valid_model = None
+    for model in st:
+        if len(model) > 0:
+            valid_model = model
+            break
+
+    if valid_model is None:
+        update_status(path.parent, {'msg': f"No valid model with chains found.", 'error_code':0, "progress": 10})
+        raise ValueError("No valid model with chains found.")
+
+    new_st = gemmi.Structure()
+    new_st.name = st.name
+    new_st.cell = st.cell
+    new_st.spacegroup_hm = st.spacegroup_hm
+    new_st.entities = st.entities
+
+    new_st.add_model(valid_model.clone())
+    new_st.setup_entities()
+
+    return new_st
 
 def _read_structure_any(path: Path) -> gemmi.Structure:
     if path.suffix.lower() == ".pdb":
         st = gemmi.read_structure(str(path))
         st.setup_entities()
+
         if len(st) > 1:
-            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) is not supported.", 'error_code':0, "progress": 10})
-            raise ValueError("Multi-model PDB (with MODEL-ENDMDL) is not supported.")
-        return st
+            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be used.", 'error_code':0, "progress": 10})
+            st = sanitize_models(st, path)
+
     # treat as cif/mmcif
-    block = gemmi.cif.read(str(path))[0]
-    st = gemmi.make_structure_from_block(block)
-    st.merge_chain_parts()
-    st.remove_waters()
-    st.remove_hydrogens()
-    st.remove_alternative_conformations()
-    st.remove_empty_chains()
+    if path.suffix.lower() == ".cif":
+        block = gemmi.cif.read(str(path))[0]
+        st = gemmi.make_structure_from_block(block)
     return st
 
 
@@ -115,20 +133,6 @@ def _detect_gaps(st: gemmi.Structure) -> GapInfo:
             chain_to_ranges[chain.name] = ranges
 
     return GapInfo(has_gap=(total_missing > 0), chain_to_ranges=chain_to_ranges, total_missing=total_missing)
-
-
-def _build_atom_weight_table(device: torch.device) -> torch.Tensor:
-    """
-    根据 const.atomic_to_symbol + const.atom_weight 构造 [num_elements] 的原子权重表，
-    用来从 one-hot ref_element 得到每个 atom 的 weight。
-    """
-    table = torch.zeros(const.num_elements, dtype=torch.float32, device=device)
-    default_w = 12.0
-    for atomic_num, symbol in const.atomic_to_symbol.items():
-        if atomic_num < const.num_elements:
-            table[int(atomic_num)] = float(const.atom_weight.get(symbol, default_w))
-    return table
-
 
 def _extract_atom_coords_and_weights_from_structure(
     st: gemmi.Structure,
