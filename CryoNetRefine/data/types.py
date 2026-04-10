@@ -126,6 +126,9 @@ Residue = [
     ("atom_disto", np.dtype("i4")),
     ("is_standard", np.dtype("?")),
     ("is_present", np.dtype("?")),
+    ("auth_seq_id", np.dtype("<U16")),
+    ("ins_code", np.dtype("<U4")),
+    ("auth_comp_id", np.dtype("<U8")),
 ]
 
 Chain = [
@@ -139,6 +142,7 @@ Chain = [
     ("res_idx", np.dtype("i4")),
     ("res_num", np.dtype("i4")),
     ("cyclic_period", np.dtype("i4")),
+    ("auth_asym_id", np.dtype("<U16")),
 ]
 
 Connection = [

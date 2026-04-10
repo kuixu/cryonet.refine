@@ -58,7 +58,10 @@ class ParsedResidue:
     idx: int
     atoms: list[ParsedAtom]
     bonds: list[ParsedBond]
-    orig_idx: Optional[int]
+    orig_idx: Optional[str]
+    auth_seq_id: str
+    ins_code: str
+    auth_comp_id: str
     atom_center: int
     atom_disto: int
     is_standard: bool
@@ -70,6 +73,7 @@ class ParsedChain:
     """A parsed chain object."""
 
     name: str
+    auth_asym_id: str
     entity: str
     type: int
     residues: list[ParsedResidue]
@@ -267,6 +271,15 @@ def get_unk_token(dtype: gemmi.PolymerType) -> str:
         raise ValueError(msg)
 
     return unk
+
+
+def get_author_seq_fields(seqid: gemmi.SeqId) -> tuple[str, str, str]:
+    """Extract author residue numbering fields from a gemmi SeqId."""
+
+    auth_seq_id = str(seqid.num)
+    ins_code = str(seqid.icode).strip() or "?"
+    orig_idx = auth_seq_id if ins_code == "?" else f"{auth_seq_id}{ins_code}"
+    return auth_seq_id, ins_code, orig_idx
 
 
 def extract_sequence_from_polymer_with_gaps(
@@ -482,10 +495,13 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
 
     # Save original index (required for parsing connections)
     if is_present:
-        orig_idx = gemmi_mol.seqid
-        orig_idx = str(orig_idx.num) + str(orig_idx.icode).strip()
+        auth_seq_id, ins_code, orig_idx = get_author_seq_fields(gemmi_mol.seqid)
+        auth_comp_id = gemmi_mol.name
     else:
-        orig_idx = 404
+        auth_seq_id = str(res_idx + 1)
+        ins_code = "?"
+        orig_idx = "404"
+        auth_comp_id = name
 
     # Remove hydrogens
     ref_mol = AllChem.RemoveHs(ref_mol, sanitize=False)
@@ -516,6 +532,9 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
             bonds=[],
             idx=res_idx,
             orig_idx=orig_idx,
+            auth_seq_id=auth_seq_id,
+            ins_code=ins_code,
+            auth_comp_id=auth_comp_id,
             atom_center=0,  # Placeholder, no center
             atom_disto=0,  # Placeholder, no center
             is_standard=False,
@@ -600,6 +619,9 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
         atom_center=0,
         atom_disto=0,
         orig_idx=orig_idx,
+        auth_seq_id=auth_seq_id,
+        ins_code=ins_code,
+        auth_comp_id=auth_comp_id,
         is_standard=False,
         is_present=is_present,
     )
@@ -610,6 +632,7 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
     polymer_type: gemmi.PolymerType,
     sequence: list[str],
     chain_id: str,
+    auth_asym_id: str,
     entity: str,
     mols: dict[str, Mol],
     moldir: str,
@@ -718,6 +741,8 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
     
     # ========== Unified residue processing loop ==========
     for j, res_name, res, name_to_atom in residue_iterator:
+        auth_comp_id = res.name if res is not None else res_name
+
         # Map MSE to MET, put the selenium atom in the sulphur column
         if res_name == "MSE":
             res_name = "MET"
@@ -793,8 +818,8 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
         for ref_atom in ref_atoms:
             # Get atom name
             atom_name = ref_atom.GetProp("name")
-            if atom_name == "OXT":
-                continue
+            # if atom_name == "OXT":
+            #     continue
             # Get coordinates from PDB
             if atom_name == "OP3":
                 # For OP3, check if it exists in the CIF file
@@ -809,7 +834,7 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
                         p_atom: gemmi.Atom = name_to_atom["P"]
                         # Simple OP3 positioning: offset from P atom
                         coords = (p_atom.pos.x - 1.48, p_atom.pos.y, p_atom.pos.z)  # 1.48 Å is typical P-OP3 bond length
-                        atom_is_present = True
+                        atom_is_present = False
                         bfactor = p_atom.b_iso
                     else:
                         atom_is_present = False
@@ -828,7 +853,7 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
                         c_atom: gemmi.Atom = name_to_atom["C"]
                         # Simple OXT positioning: offset from C atom
                         coords = (c_atom.pos.x + 1.23, c_atom.pos.y, c_atom.pos.z)  # 1.23 Å is typical C-OXT bond length
-                        atom_is_present = True
+                        atom_is_present = False
                         bfactor = c_atom.b_iso
                     else:
                         atom_is_present = False
@@ -875,9 +900,10 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
 
         # Add residue to parsed list
         if res is not None:
-            orig_idx = res.seqid
-            orig_idx = str(orig_idx.num) + str(orig_idx.icode).strip()
+            auth_seq_id, ins_code, orig_idx = get_author_seq_fields(res.seqid)
         else:
+            auth_seq_id = str(j + 1)
+            ins_code = "?"
             orig_idx = None
 
         atom_center = const.res_to_center_atom_id[res_name]
@@ -894,6 +920,9 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
                 is_standard=True,
                 is_present=res is not None,
                 orig_idx=orig_idx,
+                auth_seq_id=auth_seq_id,
+                ins_code=ins_code,
+                auth_comp_id=auth_comp_id,
             )
         )
 
@@ -908,6 +937,7 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
     # Return polymer object
     return ParsedChain(
         name=chain_id,
+        auth_asym_id=auth_asym_id,
         entity=entity,
         residues=parsed,
         type=chain_type,
@@ -1063,11 +1093,13 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     # Create mapping from chain, residue to subchains
     # since a Connection uses the chains and not subchins
     subchain_map = {}
+    subchain_to_auth_asym = {}
     for chain in structure[0]:
         for residue in chain:
             seq_id = residue.seqid
             seq_id = str(seq_id.num) + str(seq_id.icode).strip()
             subchain_map[(chain.name, seq_id)] = residue.subchain
+            subchain_to_auth_asym[residue.subchain] = chain.name
 
     # Find covalent ligands
     covalent_chain_ids = compute_covalent_ligands(
@@ -1153,6 +1185,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 polymer_type=actual_polymer_type,
                 sequence=sequence_from_entity,
                 chain_id=subchain_id,
+                auth_asym_id=subchain_to_auth_asym.get(subchain_id, subchain_id),
                 entity=entity.name,
                 mols=mols,
                 moldir=moldir,
@@ -1195,6 +1228,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 chains.append(
                     ParsedChain(
                         name=subchain_id,
+                        auth_asym_id=subchain_to_auth_asym.get(subchain_id, subchain_id),
                         entity=entity.name,
                         residues=residues,
                         type=const.chain_type_ids["NONPOLYMER"],
@@ -1239,6 +1273,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                     polymer_type=entity.polymer_type,
                     sequence=sequence_from_entity,
                     chain_id=subchain_id,
+                    auth_asym_id=subchain_to_auth_asym.get(subchain_id, subchain_id),
                     entity=entity.name,
                     mols=mols,
                     moldir=moldir,
@@ -1280,6 +1315,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 if residues:
                     parsed_non_polymer = ParsedChain(
                         name=subchain_id,
+                        auth_asym_id=subchain_to_auth_asym.get(subchain_id, subchain_id),
                         entity=entity.name,
                         residues=residues,
                         type=const.chain_type_ids["NONPOLYMER"],
@@ -1350,6 +1386,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 res_idx,
                 res_num,
                 0,
+                chain.auth_asym_id,
             )
         )
         chain_to_idx[chain.name] = asym_id
@@ -1374,13 +1411,15 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                     res.name,
                     res.type,
                     res.idx,
-                    # res.orig_idx,
                     atom_idx,
                     len(res.atoms),
                     atom_center,
                     atom_disto,
                     res.is_standard,
                     res.is_present,
+                    res.auth_seq_id,
+                    res.ins_code,
+                    res.auth_comp_id,
                 )
             )
             res_to_idx[(chain.name, i)] = (res_idx, atom_idx)

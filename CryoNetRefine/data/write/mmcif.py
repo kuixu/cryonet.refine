@@ -395,6 +395,8 @@ def to_mmcif(
 
     # label_asym_id -> short auth_asym_id
     label_to_auth = _build_chain_id_maps(structure.chains)
+    chain_fields = set(structure.chains.dtype.names or [])
+    residue_fields = set(structure.residues.dtype.names or [])
 
     # label_asym_id -> entity_id
     label_to_entity_id: dict[str, int] = {}
@@ -447,7 +449,10 @@ def to_mmcif(
     atom_id = 1
     for chain in structure.chains:
         long_id = str(chain["name"])
-        auth_id = label_to_auth.get(long_id, long_id[:2])
+        if "auth_asym_id" in chain_fields:
+            auth_id = str(chain["auth_asym_id"]).strip() or long_id
+        else:
+            auth_id = label_to_auth.get(long_id, long_id[:2])
         ent_id = label_to_entity_id.get(long_id, 1)
 
         is_nonpoly = int(chain["mol_type"]) == int(const.chain_type_ids["NONPOLYMER"])
@@ -459,8 +464,18 @@ def to_mmcif(
 
         for residue in residues:
             res_name_full = str(residue["name"])
-            comp_id = "LIG" if is_nonpoly else res_name_full[:3]
-            seq_id = int(residue["res_idx"]) + 1
+            # comp_id = "LIG" if is_nonpoly else res_name_full[:3]
+            comp_id = res_name_full[:3]
+            label_seq_id = int(residue["res_idx"]) + 1
+            auth_seq_id = str(label_seq_id)
+            if "auth_seq_id" in residue_fields:
+                auth_seq_id = str(residue["auth_seq_id"]).strip() or auth_seq_id
+            ins_code = "?"
+            if "ins_code" in residue_fields:
+                ins_code = str(residue["ins_code"]).strip() or "?"
+            auth_comp_id = comp_id
+            if "auth_comp_id" in residue_fields:
+                auth_comp_id = str(residue["auth_comp_id"]).strip() or comp_id
 
             atom_start = int(residue["atom_idx"])
             atom_end = int(residue["atom_idx"] + residue["atom_num"])
@@ -471,8 +486,8 @@ def to_mmcif(
                     continue
 
                 atom_name = str(atom["name"]).strip()
-                if atom_name == "OXT":
-                    continue
+                # if atom_name == "OXT":
+                #     continue
 
                 coords = atom["coords"]
                 x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
@@ -488,15 +503,15 @@ def to_mmcif(
                     comp_id,
                     long_id,
                     str(ent_id),
-                    str(seq_id),
-                    "?",
+                    str(label_seq_id),
+                    ins_code,
                     f"{x:.5f}",
                     f"{y:.5f}",
                     f"{z:.5f}",
                     "1",
                     f"{b:.2f}",
-                    str(seq_id),
-                    comp_id,
+                    auth_seq_id,
+                    auth_comp_id,
                     auth_id,
                     "1",
                 ]
