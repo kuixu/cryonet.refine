@@ -34,7 +34,7 @@ def parse_pdb(
         structure.setup_entities()
 
         if len(structure) > 1:
-            update_status(path.parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
+            update_status(Path(path).parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
             structure = sanitize_models(structure, Path(path))
         subchain_counts, subchain_renaming = {}, {}
 
