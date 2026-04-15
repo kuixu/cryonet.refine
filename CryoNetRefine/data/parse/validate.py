@@ -280,7 +280,7 @@ def validate_inputs(
             "Warning: found unsupported residue codes (not standard 20AA / not nucleic bases). "
             f"We will skip these residues if they cannot be parsed: {unsupported_list}"
         )
-        update_status(pdb_dir, {'msg': f"Refining...Warning: Unsupported residues found: {unsupported_list}", 'error_code':0, "progress": 10})
+        update_status(pdb_dir, {'msg': f"Refining...Warning: Unsupported residues found: {unsupported_list}, and will be skipped.", 'error_code':0, "progress": 10})
     gap_info = GapInfo(has_gap=(total_missing > 0), chain_to_ranges=gap_agg, total_missing=total_missing)
     if gap_info.has_gap:
         messages.append(
