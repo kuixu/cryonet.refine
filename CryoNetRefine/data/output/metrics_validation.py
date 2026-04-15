@@ -17,6 +17,7 @@ except ImportError:
     # Script import fallback (e.g. python metrics_validation.py ...)
     from vcx2json import vcx2json
 
+from CryoNetRefine.data.parse.validate import sanitize_models
 DEFAULT_PHENIX_ENV = "/opt/phenix-1.21.1-5286/phenix_env.sh"
 DEFAULT_CHIMERAX_CMD = "/usr/bin/chimerax"
 # Read from environment first to avoid hard-coded tool paths in callers.
@@ -716,7 +717,8 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         
         # Read structure using gemmi
         structure = gemmi.read_structure(pdb_path)
-        
+        if len(structure) > 1:
+            structure = sanitize_models(structure, Path(pdb_path))
         # Convert bfactor_value to float
         bfactor_float = float(bfactor_value)
         
@@ -775,18 +777,17 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
     # emdb = os.path.basename(pdb_path).replace(in_suffix+".pdb", "")
     emdb = os.path.basename(pdb_path).split(".")[0].split("_")[0].split("-")[0]
     
-    # If pdb_path with suffix of .pdb, then perform pdb_to_cif
-    if pdb_path.endswith(".pdb"):
-        cif_path = pdb_path.replace(".pdb", ".cif")
-        if not os.path.exists(cif_path):
-            logger.info(f"Converting {pdb_path} to CIF format: {cif_path}")
-            pdb_to_cif(pdb_path, cif_path)
-        # Use the CIF file for validation
-        if os.path.exists(cif_path):
-            pdb_path = cif_path
-        else:
-            logger.warning(f"Failed to convert {pdb_path} to CIF, using original file")
-    # if pdb_path with suffix of .pdb, then perform pdb_to_cif
+    # # If pdb_path with suffix of .pdb, then perform pdb_to_cif
+    # if pdb_path.endswith(".pdb"):
+    #     cif_path = pdb_path.replace(".pdb", ".cif")
+    #     if not os.path.exists(cif_path):
+    #         logger.info(f"Converting {pdb_path} to CIF format: {cif_path}")
+    #         pdb_to_cif(pdb_path, cif_path)
+    #     # Use the CIF file for validation
+    #     if os.path.exists(cif_path):
+    #         pdb_path = cif_path
+    #     else:
+    #         logger.warning(f"Failed to convert {pdb_path} to CIF, using original file")
 
     # log_path=pdb_path.replace(".pdb", ".vc")
     log_path = pdb_path.replace(".pdb", ".vc").replace(".cif", ".vc")
