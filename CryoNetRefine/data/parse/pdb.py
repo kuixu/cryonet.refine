@@ -1,8 +1,25 @@
 from typing import Optional
 from rdkit.Chem.rdchem import Mol
 import gemmi
+from pathlib import Path
 from tempfile import NamedTemporaryFile
+from CryoNetRefine.data.utils import update_status
 from CryoNetRefine.data.parse.mmcif import parse_mmcif, ParsedStructure
+
+def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
+    valid_model = None
+    for model in st:
+        if len(model) > 0:
+            valid_model = model
+            break
+    new_st = gemmi.Structure()
+    new_st.name = st.name
+    new_st.cell = st.cell
+    new_st.spacegroup_hm = st.spacegroup_hm
+    new_st.add_model(valid_model.clone())
+    new_st.setup_entities()
+
+    return new_st
 
 def parse_pdb(
     path: str,
@@ -15,7 +32,12 @@ def parse_pdb(
         tmp_cif_path = tmp_cif_file.name
         structure = gemmi.read_structure(str(path))
         structure.setup_entities()
+
+        if len(structure) > 1:
+            update_status(path.parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
+            structure = sanitize_models(structure, Path(path))
         subchain_counts, subchain_renaming = {}, {}
+
         for chain in structure[0]:
             subchain_counts[chain.name] = 0
             for res in chain:

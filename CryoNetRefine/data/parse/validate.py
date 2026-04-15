@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict,List, Optional, Sequence, Tuple, Union
 from CryoNetRefine.data.utils import update_status
 import torch
 import gemmi
@@ -69,8 +69,6 @@ def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
     new_st.name = st.name
     new_st.cell = st.cell
     new_st.spacegroup_hm = st.spacegroup_hm
-    new_st.entities = st.entities
-
     new_st.add_model(valid_model.clone())
     new_st.setup_entities()
 
@@ -80,9 +78,8 @@ def _read_structure_any(path: Path) -> gemmi.Structure:
     if path.suffix.lower() == ".pdb":
         st = gemmi.read_structure(str(path))
         st.setup_entities()
-
         if len(st) > 1:
-            update_status(path.parent, {'msg': f"Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be used.", 'error_code':0, "progress": 10})
+            update_status(path.parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
             st = sanitize_models(st, path)
 
     # treat as cif/mmcif
@@ -283,7 +280,7 @@ def validate_inputs(
             "Warning: found unsupported residue codes (not standard 20AA / not nucleic bases). "
             f"We will skip these residues if they cannot be parsed: {unsupported_list}"
         )
-        update_status(pdb_dir, {'msg': f"Refining...Warning: unsupported residues found ({unsupported_list}), and will be skipped. ", 'error_code':0, "progress": 10})
+        update_status(pdb_dir, {'msg': f"Refining...Warning: Unsupported residues found: {unsupported_list}", 'error_code':0, "progress": 10})
     gap_info = GapInfo(has_gap=(total_missing > 0), chain_to_ranges=gap_agg, total_missing=total_missing)
     if gap_info.has_gap:
         messages.append(
