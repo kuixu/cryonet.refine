@@ -9,7 +9,7 @@ out_dir=$d/${name}
 map=${out_dir}.mrc
 stg=$d/status
 
-cif_filename=$(jq -r '.pdbfile | split("/")[-1]' $stg)
+cif_filename=$(jq -r '.pdbfile_local | split("/")[-1]' $stg)
 cif=${d}/${cif_filename}
 
 # tem=${out_dir}_aem0.pdb
