@@ -569,7 +569,6 @@ class Engine:
         if len(initial_coords.shape) == 4:  # [B, 1, N, 3] -> [B, N, 3]
             initial_coords = initial_coords.squeeze(1)
         
-        cache_file = Path(data_dir) / f"{self.pdb_id}_{cache_key}.pkl" if data_dir is not None else None
         if cache_key in self.crop_feature_cache and iteration > 0:
             cached_features = self.crop_feature_cache[cache_key]
             s = cached_features['s'].to(self.device)
@@ -578,21 +577,6 @@ class Engine:
                 cached_features['diffusion_conditioning'], self.device
             )
             s_inputs = cached_features['s_inputs'].to(self.device)
-        elif cache_file is not None and cache_file.exists():
-            with cache_file.open("rb") as f:
-                cached_features = pickle.load(f)
-            s = cached_features['s'].to(self.device)
-            z = cached_features['z'].to(self.device)
-            diffusion_conditioning = self._move_diffusion_conditioning_to_device(
-                cached_features['diffusion_conditioning'], self.device
-            )
-            s_inputs = cached_features['s_inputs'].to(self.device)
-            self.crop_feature_cache[cache_key] = {
-                's': s.detach().cpu(),
-                'z': z.detach().cpu(),
-                'diffusion_conditioning': self._move_diffusion_conditioning_to_cpu(diffusion_conditioning),
-                's_inputs': s_inputs.detach().cpu()
-            }
         else:
             # Get actual model (handles DDP wrapping)
             model = self._get_model()
@@ -654,9 +638,6 @@ class Engine:
                     's_inputs': s_inputs.detach().cpu()
                 }
                 self.crop_feature_cache[cache_key] = cache_data
-                if cache_file is not None:
-                    with cache_file.open("wb") as f:
-                        pickle.dump(cache_data, f)
         
         # Get actual model (handles DDP wrapping)
         model = self._get_model()
