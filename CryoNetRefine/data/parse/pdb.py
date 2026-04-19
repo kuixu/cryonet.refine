@@ -36,20 +36,30 @@ def parse_pdb(
         if len(structure) > 1:
             update_status(Path(path).parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
             structure = sanitize_models(structure, Path(path))
-        subchain_counts, subchain_renaming = {}, {}
-
+        subchain_counts: dict[str, int] = {}
+        subchain_renaming: dict[str, str] = {}
+        used_new_subchains: set[str] = set()
         for chain in structure[0]:
             subchain_counts[chain.name] = 0
             for res in chain:
                 if res.subchain not in subchain_renaming:
-                    subchain_renaming[res.subchain] = chain.name + str(subchain_counts[chain.name] + 1)
-                    subchain_counts[chain.name] += 1
+                    # Use a collision-safe synthetic subchain id.
+                    # `chain.name + N` can collide with real chain names like C1/C11,
+                    # which later corrupts subchain -> auth_asym_id mapping.
+                    while True:
+                        subchain_counts[chain.name] += 1
+                        candidate = f"{chain.name}_{subchain_counts[chain.name]}"
+                        if candidate not in used_new_subchains:
+                            subchain_renaming[res.subchain] = candidate
+                            used_new_subchains.add(candidate)
+                            break
                 res.subchain = subchain_renaming[res.subchain]
         for entity in structure.entities:
-            entity.subchains = [subchain_renaming[subchain] for subchain in entity.subchains]
+            entity.subchains = [subchain_renaming.get(subchain, subchain) for subchain in entity.subchains]
 
         doc = structure.make_mmcif_document()
         doc.write_file(tmp_cif_path)
+
         return parse_mmcif(
             path=tmp_cif_path,
             mols=mols,

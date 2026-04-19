@@ -1099,8 +1099,8 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             seq_id = residue.seqid
             seq_id = str(seq_id.num) + str(seq_id.icode).strip()
             subchain_map[(chain.name, seq_id)] = residue.subchain
-            subchain_to_auth_asym[residue.subchain] = chain.name
-
+            # Keep first-seen mapping if duplicate subchain ids exist.
+            subchain_to_auth_asym.setdefault(residue.subchain, chain.name)
     # Find covalent ligands
     covalent_chain_ids = compute_covalent_ligands(
         connections=structure.connections,

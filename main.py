@@ -22,11 +22,17 @@ if __name__ == "__main__":
 import click,time, warnings
 from tqdm import tqdm
 import shutil
+import tarfile
 from pathlib import Path
 from typing import  Optional
 from dataclasses import asdict
+import numpy as np
 import torch
-from CryoNetRefine.data.module.inference import BoltzInferenceDataModule
+from CryoNetRefine.data import const
+from CryoNetRefine.data.module.inference import prepare_inference_case
+from CryoNetRefine.data.feature.featurizer import BoltzFeaturizer
+from CryoNetRefine.data.mol import load_canonicals
+from CryoNetRefine.data.tokenize.boltz import BoltzTokenizer
 from CryoNetRefine.data.types import  Manifest
 from CryoNetRefine.data.parse.input import (
     BoltzProcessedInput, DiffusionParams, model_args,
@@ -40,6 +46,8 @@ from CryoNetRefine.model.engine import Engine, RefineArgs, set_seed
 from CryoNetRefine.data.write.utils import write_refined_structure
 import urllib.request
 warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize them.*")
+
+MOL_URL = "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/mols.tar"
 
 
 def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
@@ -99,6 +107,202 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
             checkpoint_path = downloaded_checkpoint
     
     return checkpoint_path
+
+
+def ensure_mols_dir(mol_dir: Path) -> Path:
+    """Ensure local molecule library exists; download and extract if needed."""
+    mol_dir = Path(mol_dir)
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    ready_flag = mol_dir / ".download_complete"
+    if ready_flag.exists() and any(p.name != ".download_complete" for p in mol_dir.iterdir()):
+        return mol_dir
+
+    # Directory exists but does not have completion marker: treat as partial/corrupt.
+    for item in list(mol_dir.iterdir()):
+        if item.is_dir():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
+
+    tar_path = mol_dir.parent / "mols.tar"
+    extract_dir = mol_dir.parent / "_mols_extract_tmp"
+    max_retries = 3
+
+    def _validate_tar(path: Path) -> None:
+        with tarfile.open(path, "r:*") as tar:
+            for _ in tar:
+                pass
+
+    click.echo(f"Molecule directory is empty, downloading from {MOL_URL}...")
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if tar_path.exists():
+                tar_path.unlink()
+            with urllib.request.urlopen(MOL_URL) as response:
+                total_size = int(response.headers.get("Content-Length", 0))
+                downloaded = 0
+                with tar_path.open("wb") as f:
+                    with tqdm(
+                        total=total_size,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc=f"Downloading mols.tar (attempt {attempt}/{max_retries})",
+                    ) as pbar:
+                        while True:
+                            chunk = response.read(8192)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            pbar.update(len(chunk))
+            if total_size > 0 and downloaded != total_size:
+                raise RuntimeError(
+                    f"Incomplete download: expected {total_size} bytes, got {downloaded} bytes."
+                )
+            _validate_tar(tar_path)
+            last_error = None
+            break
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            click.echo(f"Download/validation failed on attempt {attempt}: {e}")
+            if tar_path.exists():
+                tar_path.unlink()
+            if attempt < max_retries:
+                time.sleep(2)
+    if last_error is not None:
+        raise RuntimeError(f"Failed to download valid mols archive after {max_retries} attempts: {last_error}")
+
+    try:
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_path, "r:*") as tar:
+            tar.extractall(path=extract_dir)
+
+        src_root = extract_dir / "mols" if (extract_dir / "mols").exists() else extract_dir
+        copied = 0
+        for item in src_root.iterdir():
+            target = mol_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
+            copied += 1
+        if copied == 0:
+            raise RuntimeError("Downloaded mols archive but extracted no files.")
+        ready_flag.write_text("ok\n", encoding="utf-8")
+    finally:
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+
+    click.echo(f"Molecule library ready: {mol_dir}")
+    return mol_dir
+
+
+def build_lightweight_global_batch(case) -> dict:
+    """Build a minimal full-structure batch for crop-first refinement."""
+    structure = case.tokenized.structure
+    tokens = case.tokenized.tokens
+    if len(tokens) == 0:
+        raise ValueError(f"Record {case.record.id} has no tokens.")
+    atom_end = (tokens["atom_idx"].astype(np.int64) + tokens["atom_num"].astype(np.int64)).max()
+    n_atoms = int(atom_end)
+    if n_atoms == 0:
+        raise ValueError(f"Record {case.record.id} has no atoms.")
+
+    if len(structure.ensemble) == 0:
+        raise ValueError(f"Record {case.record.id} has empty ensemble table.")
+    coord_offset = int(structure.ensemble[0]["atom_coord_idx"])
+    coords_np = structure.coords[coord_offset : coord_offset + n_atoms]["coords"].astype(np.float32)
+    template_coords = torch.from_numpy(coords_np).unsqueeze(0).unsqueeze(0)
+
+    atom_pad_mask = torch.ones((1, n_atoms), dtype=torch.bool)
+    if "is_present" in structure.atoms.dtype.names:
+        atom_present_np = structure.atoms[:n_atoms]["is_present"].astype(bool)
+    else:
+        atom_present_np = np.ones(n_atoms, dtype=bool)
+    atom_present = torch.from_numpy(atom_present_np).unsqueeze(0)
+
+    # Global clash auxiliary features (memory-light versions).
+    residue_index = torch.from_numpy(tokens["res_idx"].astype(np.int64)).unsqueeze(0)
+    atom_token_index_np = np.zeros(n_atoms, dtype=np.int64)
+    for tok in tokens:
+        tok_idx = int(tok["token_idx"])
+        a0 = int(tok["atom_idx"])
+        a1 = a0 + int(tok["atom_num"])
+        atom_token_index_np[a0:a1] = tok_idx
+    atom_token_index = torch.from_numpy(atom_token_index_np).unsqueeze(0)
+
+    ref_element_idx_np = np.zeros(n_atoms, dtype=np.int64)
+    # Prefer the same source as legacy featurizer: RDKit atom atomic number
+    # via token res_name + atom name mapping.
+    for tok in tokens:
+        res_name = str(tok["res_name"])
+        mol = case.molecules.get(res_name)
+        if mol is None:
+            continue
+        atom_name_to_ref = {}
+        for a in mol.GetAtoms():
+            if a.HasProp("name"):
+                atom_name_to_ref[a.GetProp("name")] = a
+        a0 = int(tok["atom_idx"])
+        a1 = a0 + int(tok["atom_num"])
+        token_atoms = structure.atoms[a0:a1]
+        for local_i, atom in enumerate(token_atoms):
+            atom_name = str(atom["name"])
+            if atom_name in atom_name_to_ref:
+                ref_element_idx_np[a0 + local_i] = int(atom_name_to_ref[atom_name].GetAtomicNum())
+
+    # Fallback for unresolved atoms from name heuristic (keeps full coverage).
+    unresolved = ref_element_idx_np == 0
+    if np.any(unresolved):
+        symbol_to_atomic = {
+            "H": 1,
+            "C": 6,
+            "N": 7,
+            "O": 8,
+            "F": 9,
+            "P": 15,
+            "S": 16,
+            "CL": 17,
+            "K": 19,
+            "CA": 20,
+            "MN": 25,
+            "FE": 26,
+            "CO": 27,
+            "NI": 28,
+            "CU": 29,
+            "ZN": 30,
+            "SE": 34,
+            "BR": 35,
+            "I": 53,
+            "MG": 12,
+            "NA": 11,
+        }
+        atom_names = structure.atoms[:n_atoms]["name"]
+        for i in np.where(unresolved)[0]:
+            name = str(atom_names[i]).strip().upper()
+            alpha = "".join(ch for ch in name if ch.isalpha())
+            atomic_num = 0
+            if len(alpha) >= 2 and alpha[:2] in symbol_to_atomic:
+                atomic_num = symbol_to_atomic[alpha[:2]]
+            elif len(alpha) >= 1 and alpha[0] in symbol_to_atomic:
+                atomic_num = symbol_to_atomic[alpha[0]]
+            ref_element_idx_np[i] = atomic_num
+    ref_element = torch.from_numpy(ref_element_idx_np).unsqueeze(0).clamp(0, const.num_elements - 1)
+
+    return {
+        "record": [case.record],
+        "template_coords": template_coords,
+        "atom_pad_mask": atom_pad_mask,
+        "atom_resolved_mask": atom_present,
+        "template_atom_present_mask": atom_present.unsqueeze(1),
+        "residue_index": residue_index.long(),
+        "atom_token_index": atom_token_index.long(),
+        "ref_element": ref_element.long(),
+    }
 
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
@@ -167,7 +371,8 @@ def refine(
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
     validate_inputs(input_path=data,target_density = target_density, resolution = resolution)
-    mol_dir =Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
+    mol_dir = Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
+    mol_dir = ensure_mols_dir(mol_dir)
     # Load processed data !!
     processed_dir = out_dir / f"processed_{data_stem}"
     if processed_dir.exists():
@@ -255,37 +460,53 @@ def refine(
         enable_cropping=enable_cropping,
         pdb_id=pdb_id,  
     )
-    data_module = BoltzInferenceDataModule(
-        manifest=processed.manifest,
-        mol_dir=mol_dir,
-        num_workers=num_workers,  # Single worker for stability
-        template_dir=processed.template_dir,
-        extra_mols_dir=processed.extra_mols_dir,
-        override_method=None,
-    )
-    # Setup data loader - use original for stability
-    data_module.setup("predict")
-    dataloader = data_module.predict_dataloader()
-    # Perform refinement for each structure
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Refining structures")):
-        click.echo(f"\nProcessing batch {batch_idx}")
-        batch['template_coords'] = batch['template_coords']
-        
-        if ignore_origin:
-            offset = target_density_obj[0].offset
-            batch['template_coords'] = batch['template_coords'] - offset.to(batch['template_coords'].device)
-            target_density_obj[0].offset = torch.tensor([0.0, 0.0, 0.0],device = target_density_obj[0].device)
+    tokenizer = BoltzTokenizer()
+    canonicals = load_canonicals(mol_dir)
+    crop_featurizer = BoltzFeaturizer()
+    # Perform refinement for each structure (crop-first streaming path)
+    for batch_idx, record in enumerate(tqdm(processed.manifest.records, desc="Refining structures")):
+        click.echo(f"\nProcessing batch {batch_idx} (record={record.id})")
+        case = prepare_inference_case(
+            record=record,
+            mol_dir=mol_dir,
+            tokenizer=tokenizer,
+            canonicals=canonicals,
+            template_dir=processed.template_dir,
+            extra_mols_dir=processed.extra_mols_dir,
+        )
+        batch = build_lightweight_global_batch(case)
+        crop_plans = refiner.molecule_aware_cropper.plan_crops_from_tokenized(case.tokenized)
+        if len(crop_plans) == 0:
+            raise RuntimeError(f"No valid crops found for record {record.id}")
+        refiner.set_crop_first_context(
+            tokenized=case.tokenized,
+            molecules=case.molecules,
+            record=case.record,
+            crop_plans=crop_plans,
+            override_method=None,
+            random_seed=42,
+            featurizer=crop_featurizer,
+        )
+
+        offset = None
+        if ignore_origin and target_density_obj:
+            offset = target_density_obj[0].offset.clone()
+            batch["template_coords"] = batch["template_coords"] - offset.to(batch["template_coords"].device)
+            target_density_obj[0].offset = torch.tensor([0.0, 0.0, 0.0], device=target_density_obj[0].device)
         refined_coords, _ = refiner.refine(batch, target_density_obj, processed.template_dir, out_dir, cond_early_stop=cond_early_stop)
-        if ignore_origin:
+        if ignore_origin and offset is not None:
             refined_coords = refined_coords + offset.to(refined_coords.device)
+            target_density_obj[0].offset = offset
         
         # Get best results info from refiner
-        best_iteration = getattr(refiner, 'best_iteration', None)
-        best_loss = getattr(refiner, 'best_loss', None)
-        best_cc = getattr(refiner, 'best_cc', None)
+        best_iteration, best_loss, best_cc = (
+            getattr(refiner, 'best_iteration', None),
+            getattr(refiner, 'best_loss', None),
+            getattr(refiner, 'best_cc', None),
+        )
+   
         # Save refined structure (best result)
-        # output_path = out_dir / f"{pdb_id}_{out_suffix}.pdb"
-        output_path = out_dir / f"{pdb_id}_{out_suffix}.cif"
+        output_path = out_dir / f"{record.id}_{out_suffix}.cif"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_refined_structure(batch, refined_coords, data_dir, output_path)
         if validate_output:
@@ -297,17 +518,8 @@ def refine(
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
-    if processed_dir.exists():
-        shutil.rmtree(processed_dir)
-        click.echo(f"Removed intermediate directory: {processed_dir}")
-    if 'refiner' in locals():
-        refiner.clear_caches()
-    if 'refiner' in locals() and hasattr(refiner, 'geometric_adapter'):
-        cache_info = refiner.geometric_adapter.get_cache_info()
-        click.echo(f"Structure cache info: {cache_info}")
     click.echo("Refinement completed!")
     end_time = time.time()
-
     click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
 
 if __name__ == "__main__":

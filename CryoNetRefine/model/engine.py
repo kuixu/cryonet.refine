@@ -13,6 +13,7 @@ import gc
 from functools import partial
 import numpy as np
 import torch
+from CryoNetRefine.data.feature.featurizer import BoltzFeaturizer
 from CryoNetRefine.data.const import atom_weight, atomic_to_symbol
 from CryoNetRefine.data.parse.input import RefineArgs
 from CryoNetRefine.data.write.utils import write_refined_structure
@@ -63,6 +64,15 @@ class Engine:
         self.pdb_id = pdb_id
         self.final_global_refined_coords = None
         self.global_feats = None
+        self.crop_first_tokenized = None
+        self.crop_first_molecules = None
+        self.crop_first_record = None
+        self.crop_first_plans = None
+        self.crop_first_featurizer = None
+        self.crop_first_override_method = None
+        self.crop_first_seed = 42
+        self.crop_feature_cache = {}
+        self._use_global_clash_this_run = self.refine_args.use_global_clash
         # Initialize cropper if needed
         if self.enable_cropping:
             if self.refine_args.use_molecule_aware_cropping:
@@ -168,17 +178,58 @@ class Engine:
         if self.cropper is not None:
             return True
         return False
+
+    def set_crop_first_context(
+        self,
+        tokenized,
+        molecules,
+        record,
+        crop_plans,
+        override_method=None,
+        random_seed: int = 42,
+        featurizer: BoltzFeaturizer | None = None,
+    ) -> None:
+        """Attach crop-first inputs so crops are featurized on demand."""
+        self.crop_first_tokenized = tokenized
+        self.crop_first_molecules = molecules
+        self.crop_first_record = record
+        self.crop_first_plans = list(crop_plans)
+        self.crop_first_override_method = override_method
+        self.crop_first_seed = int(random_seed)
+        self.crop_first_featurizer = featurizer if featurizer is not None else BoltzFeaturizer()
+
+    def _unpack_crop_info(self, crop_info):
+        """Return (crop_idx, crop_token_indices, molecule_type, crop_metadata)."""
+        if hasattr(crop_info, "crop_idx"):
+            return (
+                int(crop_info.crop_idx),
+                crop_info.global_token_indices,
+                crop_info.molecule_type,
+                crop_info.metadata,
+            )
+        return crop_info
+
+    def _single_sample_to_batch(self, features: dict) -> dict:
+        """Add batch dim to per-sample feature dict (batch_size=1)."""
+        batched = {}
+        keep_unbatched = {"token_to_backbone_atoms", "token_backbone_mask"}
+        for key, value in features.items():
+            if isinstance(value, torch.Tensor) and key not in keep_unbatched:
+                batched[key] = value.unsqueeze(0)
+            else:
+                batched[key] = value
+        return batched
    
 
     def refine_step_with_molecule_aware_cropping(self, batch, target_density=None, iteration=0, data_dir=None, out_dir=None):
         """Perform one refinement step with molecule-type-aware cropping."""
         
-     # 🚀 Use pre-computed cached crops instead of recomputing
-        if hasattr(self, 'cached_crop_batches') and self.cached_crop_batches is not None:
-            num_crops = len(self.cached_crop_batches)
+        # Use pre-computed crop metadata (lightweight) instead of recomputing.
+        if hasattr(self, 'cached_crop_info') and self.cached_crop_info is not None:
             all_crops = self.cached_crop_info
+            num_crops = len(all_crops)
         else:
-            # Fallback: compute on the fly (should not happen if cache was set up correctly)
+            # Fallback: compute crop indices on the fly.
             all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
             num_crops = len(all_crops)
             print("⚠️  Warning: Using on-the-fly crop computation (cache not available)")
@@ -197,36 +248,54 @@ class Engine:
         
         # GPU mem
         for crop_idx, crop_info in enumerate(all_crops):
-            _, crop_token_indices, molecule_type, crop_metadata = crop_info
-            # print(f"  Processing crop {crop_idx + 1}/{num_crops}: {molecule_type} "
-            #       f"({crop_metadata['num_tokens']} tokens)")
-            if torch.cuda.is_available():
-                mem_allocated = torch.cuda.memory_allocated(self.device) / 1024 / 1024 / 1024  # GB
-                mem_reserved = torch.cuda.memory_reserved(self.device) / 1024 / 1024 / 1024  # GB
-                # print(f"    GPU memory: allocated={mem_allocated:.2f} GB, reserved={mem_reserved:.2f} GB")
-            # crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
-            #     batch, crop_info
-            # )
-            # 🚀 Use cached crop batch instead of re-extracting
-            if hasattr(self, 'cached_crop_batches') and self.cached_crop_batches is not None:
-                cached = self.cached_crop_batches[crop_idx]
-                # Move crop_batch back to GPU when needed
-                crop_batch = {}
-                for k, v in cached['crop_batch'].items():
-                    if isinstance(v, torch.Tensor):
-                        crop_batch[k] = v.to(self.device, non_blocking=True)
-                    else:
-                        crop_batch[k] = v
-                crop_token_indices = cached['crop_token_indices']
-                crop_atom_mask = cached['crop_atom_mask']
-                if isinstance(crop_atom_mask, torch.Tensor):
-                    crop_atom_mask = crop_atom_mask.to(self.device)
+            crop_idx_info, crop_token_indices, molecule_type, crop_metadata = self._unpack_crop_info(crop_info)
+            if self.crop_first_tokenized is not None and self.crop_first_molecules is not None:
+                if isinstance(crop_token_indices, torch.Tensor):
+                    crop_token_indices_np = crop_token_indices.detach().cpu().numpy()
+                else:
+                    crop_token_indices_np = np.asarray(crop_token_indices, dtype=np.int64)
+                random_state = np.random.default_rng(self.crop_first_seed + int(crop_idx_info))
+                features, global_token_indices, global_atom_indices = self.crop_first_featurizer.process_crop( # ~0.98 seconds
+                    data=self.crop_first_tokenized,
+                    crop_token_indices=crop_token_indices_np,
+                    random=random_state,
+                    molecules=self.crop_first_molecules,
+                    max_atoms=None,
+                    max_tokens=self.max_tokens if self.max_tokens > 0 else None,
+                    compute_frames=True,
+                    override_method=self.crop_first_override_method,
+                )
+                end_time = time.time()
+                crop_batch = self._single_sample_to_batch(features)
+                crop_batch["record"] = [self.crop_first_record]
+                crop_batch["is_cropped"] = True
+                crop_batch["crop_type"] = "molecule_aware"
+                crop_batch["molecule_type"] = molecule_type
+                crop_batch["crop_metadata"] = crop_metadata
+                crop_batch["crop_idx"] = int(crop_idx_info)
+                crop_batch["crop_size"] = int(len(global_token_indices))
+                crop_batch["crop_start"] = int(global_token_indices.min()) if len(global_token_indices) else 0
+
+                n_global_atoms = int(batch["atom_pad_mask"].shape[1])
+                crop_atom_mask = torch.zeros(n_global_atoms, dtype=torch.bool)
+                global_atom_indices_t = torch.from_numpy(
+                    np.asarray(global_atom_indices, dtype=np.int64)
+                ).long()
+                crop_atom_mask[global_atom_indices_t] = True
+                crop_token_indices = global_token_indices
             else:
-                raise ValueError("Cached crop batches not available")
+                crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
+                    batch, crop_info
+                )
+            for k, v in list(crop_batch.items()):
+                if isinstance(v, torch.Tensor):
+                    crop_batch[k] = v.to(self.device, non_blocking=True)
+            if isinstance(crop_atom_mask, torch.Tensor):
+                crop_atom_mask = crop_atom_mask.to(self.device)
             
             # Run refinement step on crop
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
-                crop_batch, target_density, iteration, data_dir, out_dir, crop_idx, crop_atom_mask
+                crop_batch, target_density, iteration, data_dir, out_dir, int(crop_idx_info), crop_atom_mask
             )
             
             # Update refined_coords
@@ -270,9 +339,6 @@ class Engine:
             self.geometric_adapter.clear_cache()
         if hasattr(self, 'geometric_wrapper'):
             self.geometric_wrapper.clear_cache()
-        # OPTIMIZATION: Clear feature cache to prevent memory leaks
-        if hasattr(self, 'crop_feature_cache'):
-            self.crop_feature_cache.clear()
         
         # Clear atom types cache
         if hasattr(self, 'crop_atom_types_cache'):
@@ -452,7 +518,12 @@ class Engine:
 
         initial_coords = crop_batch["template_coords"]
         # Create cache key early for atom types caching
-        cache_key = f"crop_{crop_idx}_tokens_{crop_batch['token_pad_mask'].shape[1]}_atoms_{crop_batch['atom_pad_mask'].shape[1]}"
+        cache_mode = "cropfirst_v1" if self.crop_first_tokenized is not None else "legacy"
+        cache_key = (
+            f"{cache_mode}_crop_{crop_idx}_"
+            f"tokens_{crop_batch['token_pad_mask'].shape[1]}_"
+            f"atoms_{crop_batch['atom_pad_mask'].shape[1]}"
+        )
         
         if iteration == 0:
             atom_types = self.get_atom_types(crop_batch)
@@ -498,31 +569,30 @@ class Engine:
         if len(initial_coords.shape) == 4:  # [B, 1, N, 3] -> [B, N, 3]
             initial_coords = initial_coords.squeeze(1)
         
-        cache_file = Path(data_dir) / f"{self.pdb_id}_{cache_key}.pkl"
-        if cache_file.exists():
-            if hasattr(self, 'crop_feature_cache') and cache_key in self.crop_feature_cache and iteration > 0:
-                cached_features = self.crop_feature_cache[cache_key]
-                s = cached_features['s'].to(self.device)
-                z = cached_features['z'].to(self.device)
-                diffusion_conditioning = self._move_diffusion_conditioning_to_device(
-                    cached_features['diffusion_conditioning'], self.device
-                )
-                s_inputs = cached_features['s_inputs'].to(self.device)
-            else:
-                with cache_file.open("rb") as f:
-                    cached_features = pickle.load(f)
-                    s = cached_features['s'].to(self.device)
-                    z = cached_features['z'].to(self.device)
-                    diffusion_conditioning = self._move_diffusion_conditioning_to_device(
-                        cached_features['diffusion_conditioning'], self.device
-                    )
-                    s_inputs = cached_features['s_inputs'].to(self.device)
-                    self.crop_feature_cache[cache_key] = {
-                        's': s.detach().cpu(),
-                        'z': z.detach().cpu(),
-                        'diffusion_conditioning': self._move_diffusion_conditioning_to_cpu(diffusion_conditioning),
-                        's_inputs': s_inputs.detach().cpu()
-                    }
+        cache_file = Path(data_dir) / f"{self.pdb_id}_{cache_key}.pkl" if data_dir is not None else None
+        if cache_key in self.crop_feature_cache and iteration > 0:
+            cached_features = self.crop_feature_cache[cache_key]
+            s = cached_features['s'].to(self.device)
+            z = cached_features['z'].to(self.device)
+            diffusion_conditioning = self._move_diffusion_conditioning_to_device(
+                cached_features['diffusion_conditioning'], self.device
+            )
+            s_inputs = cached_features['s_inputs'].to(self.device)
+        elif cache_file is not None and cache_file.exists():
+            with cache_file.open("rb") as f:
+                cached_features = pickle.load(f)
+            s = cached_features['s'].to(self.device)
+            z = cached_features['z'].to(self.device)
+            diffusion_conditioning = self._move_diffusion_conditioning_to_device(
+                cached_features['diffusion_conditioning'], self.device
+            )
+            s_inputs = cached_features['s_inputs'].to(self.device)
+            self.crop_feature_cache[cache_key] = {
+                's': s.detach().cpu(),
+                'z': z.detach().cpu(),
+                'diffusion_conditioning': self._move_diffusion_conditioning_to_cpu(diffusion_conditioning),
+                's_inputs': s_inputs.detach().cpu()
+            }
         else:
             # Get actual model (handles DDP wrapping)
             model = self._get_model()
@@ -583,14 +653,32 @@ class Engine:
                                                 for k, v in diffusion_conditioning.items()},
                     's_inputs': s_inputs.detach().cpu()
                 }
-                with cache_file.open("wb") as f:
-                    pickle.dump(cache_data, f)
+                self.crop_feature_cache[cache_key] = cache_data
+                if cache_file is not None:
+                    with cache_file.open("wb") as f:
+                        pickle.dump(cache_data, f)
         
         # Get actual model (handles DDP wrapping)
         model = self._get_model()
         model.train()  # Set to training mode for diffusion
 
         feats = crop_batch
+        # Guard against silent atom-dimension leakage (e.g. full-structure template coords).
+        if "template_coords" in feats and "atom_pad_mask" in feats:
+            n_atom_feat = int(feats["atom_pad_mask"].shape[1])
+            tc = feats["template_coords"]
+            if tc.ndim == 4:
+                n_atom_tc = int(tc.shape[2])
+            elif tc.ndim == 3:
+                n_atom_tc = int(tc.shape[1])
+            else:
+                n_atom_tc = -1
+            if n_atom_tc != n_atom_feat:
+                raise RuntimeError(
+                    "template_coords/atom_pad_mask atom dim mismatch before den_sample: "
+                    f"template_coords.shape={tuple(tc.shape)}, "
+                    f"atom_pad_mask.shape={tuple(feats['atom_pad_mask'].shape)}"
+                )
 
         with torch.set_grad_enabled(True):
             struct_out = model.structure_module.den_sample(
@@ -644,7 +732,8 @@ class Engine:
             geometric_wrapper=self.geometric_wrapper,  
             atom_weights=atom_radius_weights,
             final_global_refined_coords=self.final_global_refined_coords,
-            global_feats=self.global_feats
+            global_feats=self.global_feats,
+            use_global_clash=getattr(self, "_use_global_clash_this_run", self.refine_args.use_global_clash),
         )
 
         # Debug: Print crop loss info
@@ -686,98 +775,71 @@ class Engine:
         # print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
         model = self._get_model()
         model.train()  # Set 
-        self.global_feats = {
-            "atom_pad_mask": batch["atom_pad_mask"].to(self.device),
-            "ref_element": batch["ref_element"].to(self.device),
-            "atom_to_token": batch["atom_to_token"].to(self.device),
-            "residue_index": batch["residue_index"].to(self.device),
-            "template_atom_present_mask": batch["template_atom_present_mask"].to(self.device),
+        self.global_feats = {}
+        for key in [
+            "atom_pad_mask",
+            "ref_element",
+            "atom_to_token",
+            "atom_token_index",
+            "residue_index",
+            "template_atom_present_mask",
+        ]:
+            if key in batch:
+                self.global_feats[key] = batch[key].to(self.device)
+
+        # Global clash needs full-graph mapping tensors; if trimmed out for memory,
+        # degrade to per-crop clash instead of hard failing on missing keys.
+        base_required_keys = {
+            "atom_pad_mask",
+            "ref_element",
+            "residue_index",
+            "template_atom_present_mask",
         }
+        has_mapping = ("atom_to_token" in self.global_feats) or ("atom_token_index" in self.global_feats)
+        has_global_clash_inputs = base_required_keys.issubset(self.global_feats.keys()) and has_mapping
+        if self.refine_args.use_global_clash and not has_global_clash_inputs:
+            missing = sorted(base_required_keys - set(self.global_feats.keys()))
+            if not has_mapping:
+                missing.append("atom_to_token|atom_token_index")
+            print(
+                "⚠️  Falling back to per-crop clash; missing global features: "
+                + ", ".join(missing)
+            )
+            self._use_global_clash_this_run = False
+        else:
+            self._use_global_clash_this_run = self.refine_args.use_global_clash
         # Initialize best results tracking
         best_coords = None
         best_loss = float('inf')
         best_cc = float('-inf')  # Negative infinity
         best_iteration = -1
         
-        # OPTIMIZATION: Initialize feature cache for this refinement run
-        self.crop_feature_cache = {}
-        # 🚀 OPTIMIZATION: Pre-compute and cache all crops before iteration loop
-        # Since batch input is the same across all iterations, crop results are identical
-        crop_cache_file = None
-        if data_dir is not None and self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
-            data_dir_path = Path(data_dir)
-            crop_cache_file = data_dir_path / f"{self.pdb_id}_crop_cache.pkl"
-       # Try to load crop cache from file
-        if crop_cache_file is not None and crop_cache_file.exists():
-            try:
-                with crop_cache_file.open("rb") as f:
-                    cached_crops = pickle.load(f)
-                self.cached_crop_batches = cached_crops['crop_batches']
-                self.cached_crop_info = cached_crops['crop_info']
-                # print(f"🚀 Loaded crop cache from: {crop_cache_file.name}")
-            except Exception as e:
-                print(f"⚠️  Failed to load crop cache, recomputing: {e}")
-                crop_cache_file = None
-        
-        # Compute and cache crops if not loaded
-        if crop_cache_file is None or not crop_cache_file.exists():
-            if self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
-                # print("Pre-computing crops for all iterations...")
-                all_crops = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
-                num_crops = len(all_crops)
-                
-                # Print crop info (only once)
-                # print(f"Using molecule-type-aware cropping for structure")
-                # print(f"Structure info: {num_crops} crops")
-                crop_info = self.molecule_aware_cropper.get_crop_info(batch)
-                print(f"Molecule type distribution:")
-                for mol_type, count in crop_info['molecule_type_counts'].items():
-                    print(f"  {mol_type}: {count} crops")
-                for i, crop in enumerate(all_crops):
-                    crop_idx, crop_token_indices, molecule_type, crop_metadata = crop
-                    print(f"  Crop {i}: {molecule_type} (tokens={crop_metadata['num_tokens']}, "
-                          f"sequences={len(crop_metadata['sequences'])}, "
-                          f"complete={crop_metadata['is_complete']})")
-                
-                # Pre-extract all crop batches and masks
-                self.cached_crop_batches = []
-                self.cached_crop_info = []
-                for crop_idx, crop_info_tuple in enumerate(all_crops):
-                    crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
-                        batch, crop_info_tuple
-                    )
-                    # Store crop_batch on CPU to save GPU memory (will move to GPU when needed)
-                    crop_batch_cpu = {}
-                    for k, v in crop_batch.items():
-                        if isinstance(v, torch.Tensor):
-                            crop_batch_cpu[k] = v.cpu()
-                        else:
-                            crop_batch_cpu[k] = v
-                    
-                    self.cached_crop_batches.append({
-                        'crop_batch': crop_batch_cpu,
-                        'crop_token_indices': crop_token_indices,
-                        'crop_atom_mask': crop_atom_mask.cpu() if isinstance(crop_atom_mask, torch.Tensor) else crop_atom_mask
-                    })
-                    self.cached_crop_info.append(crop_info_tuple)
-                
-                # Save crop cache to file
-                if crop_cache_file is not None:
-                    try:
-                        cache_data = {
-                            'crop_batches': self.cached_crop_batches,
-                            'crop_info': self.cached_crop_info
-                        }
-                        with crop_cache_file.open("wb") as f:
-                            pickle.dump(cache_data, f)
-                        # print(f"Saved crop cache to: {crop_cache_file.name}")
-                    except Exception as e:
-                        print(f"Failed to save crop cache: {e}")
+        # Stream crops on-the-fly instead of pre-materializing all crop batches.
+        # This keeps memory bounded by one crop at a time.
+        if self.refine_args.use_molecule_aware_cropping and self.molecule_aware_cropper is not None:
+            if self.crop_first_plans is not None:
+                self.cached_crop_info = self.crop_first_plans
             else:
-                # No cropping, set empty cache
-                self.cached_crop_batches = None
-                self.cached_crop_info = None
-                raise ValueError("No cropping method selected")
+                self.cached_crop_info = self.molecule_aware_cropper.get_molecule_type_aware_crops(batch)
+
+            print(f"Molecule type distribution:")
+            mol_type_counts = {}
+            for crop in self.cached_crop_info:
+                _, _, molecule_type, _ = self._unpack_crop_info(crop)
+                mol_type_counts[molecule_type] = mol_type_counts.get(molecule_type, 0) + 1
+            for mol_type, count in mol_type_counts.items():
+                print(f"  {mol_type}: {count} crops")
+
+            for i, crop in enumerate(self.cached_crop_info):
+                _, _, molecule_type, crop_metadata = self._unpack_crop_info(crop)
+                print(
+                    f"  Crop {i}: {molecule_type} (tokens={crop_metadata['num_tokens']}, "
+                    f"sequences={len(crop_metadata['sequences'])}, "
+                    f"complete={crop_metadata['is_complete']})"
+                )
+        else:
+            self.cached_crop_info = None
+            raise ValueError("No cropping method selected")
         
         
         for iteration in range(self.refine_args.num_recycles):

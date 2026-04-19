@@ -103,9 +103,6 @@ def probe_style_clash_loss(
     # After trimming, all remaining atoms are valid
     atom_mask = torch.ones((1, N), dtype=torch.bool, device=device)
 
-    ref_element = feats["ref_element"].float().to(device)   # [1, N_pad, E]
-    ref_element = ref_element[:, :L, :][:, valid_idx, :]    # [1, N_valid, E]
-
     # Construct vdw radii tensor according to the reference element one-hot encoding
     vdw_radii_table = torch.zeros(
         const.num_elements, dtype=torch.float32, device=device
@@ -113,7 +110,17 @@ def probe_style_clash_loss(
     vdw_radii_table[1:1 + len(const.vdw_radii)] = torch.tensor(
         const.vdw_radii, dtype=torch.float32, device=device
     )
-    atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)  # [1, N]
+    ref_element = feats["ref_element"].to(device)
+    if ref_element.ndim == 3:
+        # Legacy dense one-hot [1, N_pad, E]
+        ref_element = ref_element.float()[:, :L, :][:, valid_idx, :]
+        atom_vdw_radii = (ref_element @ vdw_radii_table.unsqueeze(-1)).squeeze(-1)  # [1, N]
+    else:
+        # Lightweight index representation [1, N_pad] or [N_pad]
+        if ref_element.ndim == 1:
+            ref_element = ref_element.unsqueeze(0)
+        ref_element_idx = ref_element.long()[:, :L][:, valid_idx].clamp(0, const.num_elements - 1)
+        atom_vdw_radii = vdw_radii_table[ref_element_idx]  # [1, N]
 
     # Mixed precision for heavy pairwise computation (reduces saved tensors memory)
     amp_enabled = device.type == "cuda"
@@ -129,7 +136,7 @@ def probe_style_clash_loss(
         # large intermediates for every (i,j) block (which otherwise accumulates to OOM).
         soft_n_clashes = torch.tensor(0.0, device=device, requires_grad=True)
         
-        # Precompute atom-to-residue indices for neighbor masking (no large float copy of atom_to_token)
+        # Precompute atom-to-residue indices for neighbor masking.
         if "atom_to_token" in feats and "residue_index" in feats:
             att = feats["atom_to_token"].to(device)  # [1, N_pad, Ltok], keep long
             token_idx = att[:, :L, :].argmax(dim=-1)  # [1, L] token index per atom
@@ -137,6 +144,10 @@ def probe_style_clash_loss(
             residue_index = feats["residue_index"].to(device)  # [1, Ltok]
             # residue_index[0, k] = residue id of token k; gather by token_idx -> [1, N_valid]
             atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)  # [1, N_valid]
+        elif "atom_token_index" in feats and "residue_index" in feats:
+            token_idx = feats["atom_token_index"].to(device).long()[:, :L][:, valid_idx]  # [1, N_valid]
+            residue_index = feats["residue_index"].to(device).long()  # [1, Ltok]
+            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
         else:
             atom_res_idx = None
 
@@ -268,6 +279,15 @@ def probe_style_clash_loss(
             del res_diff, atom_res_idx
             pair_mask = pair_mask & (~neighbor_mask.bool())
             del neighbor_mask
+        elif "atom_token_index" in feats and "residue_index" in feats:
+            token_idx = feats["atom_token_index"].to(device).long()[:, :L][:, valid_idx]
+            residue_index = feats["residue_index"].to(device).long()
+            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
+            res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [1, N, N]
+            neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+            del res_diff, atom_res_idx
+            pair_mask = pair_mask & (~neighbor_mask.bool())
+            del neighbor_mask
 
         # Compute clash probabilities
         with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
@@ -384,7 +404,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
     os.system(f"rm {output_path}")
     return loss_dict, time_loss_dict
 
-def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None, final_global_refined_coords=None, global_feats=None):
+def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None, final_global_refined_coords=None, global_feats=None, use_global_clash=None):
     device = predicted_coords.device
     weights = args.weight_dict
 
@@ -415,6 +435,8 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
         CC_time = time.time() - start_time
     
     geo_w = float(weights.get("geometric", 0.0))
+    if use_global_clash is None:
+        use_global_clash = args.use_global_clash
     
     # Check if this is a nucleic acid sequence - skip geometric losses for DNA/RNA
     # feats is a dict (crop_batch), so use dict access
@@ -437,7 +459,7 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
             is_nucleic_acid=is_nucleic_acid,
             final_global_refined_coords=final_global_refined_coords,
             global_feats=global_feats,
-            use_global_clash=args.use_global_clash
+            use_global_clash=use_global_clash
         )
         # Expose each component with weights
         for name, value in geo_losses.items():

@@ -1,5 +1,6 @@
 # follow boltz/src/boltz/data/module/inferencev2.py
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,16 @@ from CryoNetRefine.data.types import (
     Record,
     StructureV2
 )
+
+
+@dataclass(frozen=True)
+class InferenceCase:
+    """Lightweight inference case prepared before feature generation."""
+
+    record: Record
+    input_data: Input
+    tokenized: object
+    molecules: dict
 
 def load_input(
     record: Record,
@@ -75,6 +86,34 @@ def load_input(
     )
 
 
+def prepare_inference_case(
+    record: Record,
+    mol_dir: Path,
+    tokenizer: BoltzTokenizer,
+    canonicals: dict,
+    template_dir: Optional[Path] = None,
+    extra_mols_dir: Optional[Path] = None,
+) -> InferenceCase:
+    """Prepare one case for crop-first pipelines without full feature build."""
+    input_data = load_input(
+        record=record,
+        template_dir=template_dir,
+        extra_mols_dir=extra_mols_dir,
+    )
+    tokenized = tokenizer.tokenize(input_data)
+    molecules = {}
+    molecules.update(canonicals)
+    molecules.update(input_data.extra_mols)
+    mol_names = set(tokenized.tokens["res_name"].tolist()) - set(molecules.keys())
+    molecules.update(load_molecules(mol_dir, mol_names))
+    return InferenceCase(
+        record=record,
+        input_data=input_data,
+        tokenized=tokenized,
+        molecules=molecules,
+    )
+
+
 def collate(data: list[dict[str, Tensor]]) -> dict[str, Tensor]:
     """Collate the data.
 
@@ -113,7 +152,11 @@ def collate(data: list[dict[str, Tensor]]) -> dict[str, Tensor]:
             if not all(v.shape == shape for v in values):
                 values, _ = pad_to_max(values, 0)
             else:
-                values = torch.stack(values, dim=0)
+                if len(values) == 1:
+                    # Avoid an extra copy for the common inference batch_size=1 case.
+                    values = values[0].unsqueeze(0)
+                else:
+                    values = torch.stack(values, dim=0)
         elif key in ["token_to_backbone_atoms", "token_backbone_mask"]:
             values = values[0]
         # Stack the values
@@ -132,6 +175,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         template_dir: Optional[Path] = None,
         extra_mols_dir: Optional[Path] = None,
         override_method: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> None:
         """Initialize the training dataset.
 
@@ -157,6 +201,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.canonicals = load_canonicals(self.mol_dir)
         self.extra_mols_dir = extra_mols_dir
         self.override_method = override_method
+        self.max_tokens = max_tokens
 
     def __getitem__(self, idx: int) -> dict:
         """Get an item from the dataset.
@@ -180,10 +225,9 @@ class PredictionDataset(torch.utils.data.Dataset):
         try:
             tokenized = self.tokenizer.tokenize(input_data)
         except Exception as e:  # noqa: BLE001
-            print(  # noqa: T201
-                f"Tokenizer failed on {record.id} with error {e}. Skipping."
-            )
-            return self.__getitem__(0)
+            raise RuntimeError(
+                f"Tokenizer failed on {record.id}: {e}"
+            ) from e
 
         # Load conformers
         try:
@@ -194,8 +238,9 @@ class PredictionDataset(torch.utils.data.Dataset):
             mol_names = mol_names - set(molecules.keys())
             molecules.update(load_molecules(self.mol_dir, mol_names))
         except Exception as e:  # noqa: BLE001
-            print(f"Molecule loading failed for {record.id} with error {e}. Skipping.")
-            return self.__getitem__(0)
+            raise RuntimeError(
+                f"Molecule loading failed for {record.id}: {e}"
+            ) from e
 
         # Get random seed
         seed = 42
@@ -208,16 +253,14 @@ class PredictionDataset(torch.utils.data.Dataset):
                 molecules=molecules,
                 random=random,
                 max_atoms=None,
-                max_tokens=None,
+                max_tokens=self.max_tokens,
                 compute_frames=True,
                 override_method=self.override_method,
             )
         except Exception as e:  # noqa: BLE001
-            import traceback
-
-            traceback.print_exc()
-            print(f"Featurizer failed on {record.id} with error {e}. Skipping.")  # noqa: T201
-            return self.__getitem__(0)
+            raise RuntimeError(
+                f"Featurizer failed on {record.id}: {e}"
+            ) from e
 
         # Add record
         features["record"] = record
@@ -246,6 +289,7 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
         template_dir: Optional[Path] = None,
         extra_mols_dir: Optional[Path] = None,
         override_method: Optional[str] = None,
+        max_tokens: Optional[int] = None,
         rank: int = 0,
         world_size: int = 1,
         length_bin_size: int = 50,
@@ -285,6 +329,7 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
         self.template_dir = template_dir
         self.extra_mols_dir = extra_mols_dir
         self.override_method = override_method
+        self.max_tokens = max_tokens
 
     def predict_dataloader(self) -> DataLoader:
         """Get the training dataloader.
@@ -301,12 +346,13 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
             template_dir=self.template_dir,
             extra_mols_dir=self.extra_mols_dir,
             override_method=self.override_method,
+            max_tokens=self.max_tokens,
         )
         return DataLoader(
             dataset,
             batch_size=1,
             num_workers=self.num_workers,
-            pin_memory=True,
+            pin_memory=False, # by hfy: disable pin_memory for memory-efficient inference
             shuffle=False,
             collate_fn=collate,
         )

@@ -1,8 +1,21 @@
 """Molecule-type-aware cropper for handling mixed protein/nucleic acid structures. (designed by Cryonet.Refine)"""
 
+from dataclasses import dataclass
 from typing import Dict, List, Tuple
 import torch
 from CryoNetRefine.data import const
+from CryoNetRefine.data.types import Tokenized
+
+
+@dataclass(frozen=True)
+class CropPlan:
+    """Lightweight crop plan for crop-first pipelines."""
+
+    crop_idx: int
+    global_token_indices: torch.Tensor
+    global_atom_indices: torch.Tensor
+    molecule_type: str
+    metadata: Dict
 
 
 class MoleculeTypeAwareSlidingWindowCropper:
@@ -129,6 +142,87 @@ class MoleculeTypeAwareSlidingWindowCropper:
                 global_crop_idx += 1
         
         return all_crops
+
+    def plan_crops_from_tokenized(self, tokenized: Tokenized) -> List[CropPlan]:
+        """Plan crop token/atom indices directly from tokenized metadata."""
+        tokens = tokenized.tokens
+        if len(tokens) == 0:
+            return []
+
+        valid_token_mask = tokens["resolved_mask"].astype(bool)
+        valid_token_indices_np = valid_token_mask.nonzero()[0]
+        if valid_token_indices_np.size == 0:
+            return []
+
+        valid_token_indices = torch.from_numpy(valid_token_indices_np).long()
+        mol_types = torch.from_numpy(tokens["mol_type"][valid_token_indices_np].astype("int64"))
+        asym_ids = torch.from_numpy(tokens["asym_id"][valid_token_indices_np].astype("int64"))
+
+        type_id_to_name = {v: k for k, v in const.chain_type_ids.items()}
+        molecule_groups = self._group_by_molecule_type(
+            valid_token_indices, mol_types, asym_ids, type_id_to_name
+        )
+
+        plans: List[CropPlan] = []
+        global_crop_idx = 0
+        for mol_type_name, group_data in molecule_groups.items():
+            token_indices = group_data["token_indices"]
+            sequences = group_data["sequences"]
+            num_tokens = len(token_indices)
+
+            crop_boundaries = []
+            start = 0
+            while start < num_tokens:
+                end = min(start + self.crop_size, num_tokens)
+                crop_boundaries.append((start, end))
+                start = end
+
+            if self.min_crop_size > 0 and len(crop_boundaries) > 1:
+                last_start, last_end = crop_boundaries[-1]
+                last_size = last_end - last_start
+                if last_size < self.min_crop_size:
+                    new_last_start = max(0, last_end - self.min_crop_size)
+                    crop_boundaries[-1] = (new_last_start, last_end)
+
+            for start, end in crop_boundaries:
+                crop_token_indices = token_indices[start:end]
+                crop_sequences = {}
+                for asym_id, positions in sequences.items():
+                    crop_positions = [p - start for p in positions if start <= p < end]
+                    if crop_positions:
+                        crop_sequences[asym_id] = crop_positions
+
+                atom_chunks = []
+                for tok_i in crop_token_indices.tolist():
+                    tok = tokens[tok_i]
+                    atom_start = int(tok["atom_idx"])
+                    atom_end = atom_start + int(tok["atom_num"])
+                    atom_chunks.append(torch.arange(atom_start, atom_end, dtype=torch.long))
+                if atom_chunks:
+                    global_atom_indices = torch.unique(torch.cat(atom_chunks), sorted=True)
+                else:
+                    global_atom_indices = torch.zeros(0, dtype=torch.long)
+
+                metadata = {
+                    "is_complete": (start == 0 and end == num_tokens),
+                    "num_tokens": len(crop_token_indices),
+                    "num_atoms": int(global_atom_indices.numel()),
+                    "sequences": crop_sequences,
+                    "local_start": start,
+                    "local_end": end,
+                }
+                plans.append(
+                    CropPlan(
+                        crop_idx=global_crop_idx,
+                        global_token_indices=crop_token_indices.long(),
+                        global_atom_indices=global_atom_indices,
+                        molecule_type=mol_type_name,
+                        metadata=metadata,
+                    )
+                )
+                global_crop_idx += 1
+
+        return plans
     
     def _group_by_molecule_type(
         self, 

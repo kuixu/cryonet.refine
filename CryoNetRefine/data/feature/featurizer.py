@@ -29,10 +29,257 @@ from torch.nn.functional import one_hot
 from CryoNetRefine.data import const
 from CryoNetRefine.data.pad import pad_dim
 from CryoNetRefine.data.types import (
+    Coords,
+    Ensemble,
+    BondV2,
+    TokenBondV2,
+    StructureV2,
     TemplateInfo,
     Tokenized,
 )
 from CryoNetRefine.model.modules.utils import center_random_augmentation
+
+
+def _empty_like_dtype(dtype: np.dtype) -> np.ndarray:
+    return np.array([], dtype=dtype)
+
+
+def build_tokenized_subgraph(
+    data: Tokenized,
+    crop_token_indices: np.ndarray,
+) -> tuple[Tokenized, np.ndarray, np.ndarray]:
+    """Build a tokenized subgraph for crop-first feature computation.
+
+    Returns
+    -------
+    tuple[Tokenized, np.ndarray, np.ndarray]
+        (cropped_tokenized, global_token_indices, global_atom_indices)
+    """
+    token_indices = np.asarray(crop_token_indices, dtype=np.int64)
+    if token_indices.size == 0:
+        raise ValueError("Empty crop_token_indices is not allowed.")
+
+    tokens_old = data.tokens[token_indices].copy()
+    old_token_ids = tokens_old["token_idx"].astype(np.int64)
+    old_to_new_token = {int(old_id): i for i, old_id in enumerate(old_token_ids.tolist())}
+
+    # Gather atom indices referenced by crop tokens.
+    atom_idx_chunks = [
+        np.arange(int(tok["atom_idx"]), int(tok["atom_idx"]) + int(tok["atom_num"]), dtype=np.int64)
+        for tok in tokens_old
+    ]
+    atom_indices = np.unique(np.concatenate(atom_idx_chunks))
+    old_to_new_atom = {int(old_id): i for i, old_id in enumerate(atom_indices.tolist())}
+
+    atoms_new = data.structure.atoms[atom_indices].copy()
+    if "coords" in atoms_new.dtype.names:
+        first_offset = int(data.structure.ensemble[0]["atom_coord_idx"])
+        atoms_new["coords"] = data.structure.coords[first_offset + atom_indices]["coords"]
+
+    # Build per-ensemble cropped coord table.
+    coords_chunks = []
+    ensemble_rows = []
+    coord_offset = 0
+    for ens in data.structure.ensemble:
+        ens_start = int(ens["atom_coord_idx"])
+        ens_coords = data.structure.coords[ens_start + atom_indices].copy()
+        coords_chunks.append(ens_coords)
+        ensemble_rows.append((coord_offset, len(atom_indices)))
+        coord_offset += len(atom_indices)
+    coords_new = np.concatenate(coords_chunks).astype(Coords)
+    ensemble_new = np.array(ensemble_rows, dtype=Ensemble)
+
+    # Remap token atom indices to cropped atom table.
+    for new_tok_id, tok in enumerate(tokens_old):
+        tok["token_idx"] = new_tok_id
+        tok["atom_idx"] = old_to_new_atom[int(tok["atom_idx"])]
+        tok["center_idx"] = old_to_new_atom[int(tok["center_idx"])]
+        tok["disto_idx"] = old_to_new_atom[int(tok["disto_idx"])]
+
+    # Keep token bonds inside crop and remap token ids.
+    kept_bonds = []
+    for bond in data.bonds:
+        t1 = int(bond["token_1"])
+        t2 = int(bond["token_2"])
+        if (t1 in old_to_new_token) and (t2 in old_to_new_token):
+            new_bond = bond.copy()
+            new_bond["token_1"] = old_to_new_token[t1]
+            new_bond["token_2"] = old_to_new_token[t2]
+            kept_bonds.append(new_bond)
+    if kept_bonds:
+        bonds_new = np.array(kept_bonds, dtype=data.bonds.dtype)
+    else:
+        bonds_new = _empty_like_dtype(data.bonds.dtype)
+
+    # Structure bonds are not used in atom feature core loop for refinement path.
+    # Keep only bonds inside cropped atom set for consistency.
+    kept_struct_bonds = []
+    for bond in data.structure.bonds:
+        a1 = int(bond["atom_1"])
+        a2 = int(bond["atom_2"])
+        if (a1 in old_to_new_atom) and (a2 in old_to_new_atom):
+            new_bond = bond.copy()
+            new_bond["atom_1"] = old_to_new_atom[a1]
+            new_bond["atom_2"] = old_to_new_atom[a2]
+            kept_struct_bonds.append(new_bond)
+    if kept_struct_bonds:
+        struct_bonds_new = np.array(kept_struct_bonds, dtype=BondV2)
+    else:
+        struct_bonds_new = _empty_like_dtype(BondV2)
+
+    structure_new = StructureV2(
+        atoms=atoms_new,
+        bonds=struct_bonds_new,
+        residues=data.structure.residues,
+        chains=data.structure.chains,
+        interfaces=data.structure.interfaces,
+        mask=data.structure.mask,
+        coords=coords_new,
+        ensemble=ensemble_new,
+        pocket=data.structure.pocket,
+    )
+
+    # Crop template structures/tokens with the same token subgraph.
+    templates_new = None
+    template_tokens_new = None
+    template_bonds_new = None
+    if data.templates is not None and data.template_tokens is not None:
+        templates_new = {}
+        template_tokens_new = {}
+        template_bonds_new = {}
+        old_token_id_set = set(old_token_ids.tolist())
+
+        for template_id, template_struct in data.templates.items():
+            tmpl_tokens_all = data.template_tokens.get(template_id)
+            if tmpl_tokens_all is None or len(tmpl_tokens_all) == 0:
+                continue
+
+            # Primary mapping by token_idx, fallback by positional indices.
+            keep_mask = np.isin(
+                tmpl_tokens_all["token_idx"].astype(np.int64),
+                old_token_ids,
+            )
+            if not np.any(keep_mask):
+                if int(token_indices.max()) < len(tmpl_tokens_all):
+                    keep_mask = np.zeros(len(tmpl_tokens_all), dtype=bool)
+                    keep_mask[token_indices] = True
+                else:
+                    continue
+
+            tmpl_tokens = tmpl_tokens_all[keep_mask].copy()
+
+            tmpl_atom_chunks = [
+                np.arange(
+                    int(tok["atom_idx"]),
+                    int(tok["atom_idx"]) + int(tok["atom_num"]),
+                    dtype=np.int64,
+                )
+                for tok in tmpl_tokens
+            ]
+            if len(tmpl_atom_chunks) == 0:
+                continue
+            tmpl_atom_indices = np.unique(np.concatenate(tmpl_atom_chunks))
+            tmpl_old_to_new_atom = {
+                int(old_id): i for i, old_id in enumerate(tmpl_atom_indices.tolist())
+            }
+
+            for tok in tmpl_tokens:
+                old_tid = int(tok["token_idx"])
+                if old_tid in old_to_new_token:
+                    tok["token_idx"] = old_to_new_token[old_tid]
+                tok["atom_idx"] = tmpl_old_to_new_atom[int(tok["atom_idx"])]
+                tok["center_idx"] = tmpl_old_to_new_atom[int(tok["center_idx"])]
+                tok["disto_idx"] = tmpl_old_to_new_atom[int(tok["disto_idx"])]
+
+            tmpl_atoms_new = template_struct.atoms[tmpl_atom_indices].copy()
+            if "coords" in tmpl_atoms_new.dtype.names and len(template_struct.coords) > 0:
+                first_offset = int(template_struct.ensemble[0]["atom_coord_idx"])
+                tmpl_atoms_new["coords"] = template_struct.coords[
+                    first_offset + tmpl_atom_indices
+                ]["coords"]
+
+            tmpl_coords_chunks = []
+            tmpl_ensemble_rows = []
+            tmpl_coord_offset = 0
+            for ens in template_struct.ensemble:
+                ens_start = int(ens["atom_coord_idx"])
+                ens_coords = template_struct.coords[ens_start + tmpl_atom_indices].copy()
+                tmpl_coords_chunks.append(ens_coords)
+                tmpl_ensemble_rows.append((tmpl_coord_offset, len(tmpl_atom_indices)))
+                tmpl_coord_offset += len(tmpl_atom_indices)
+            tmpl_coords_new = np.concatenate(tmpl_coords_chunks).astype(Coords)
+            tmpl_ensemble_new = np.array(tmpl_ensemble_rows, dtype=Ensemble)
+
+            tmpl_kept_struct_bonds = []
+            for bond in template_struct.bonds:
+                a1 = int(bond["atom_1"])
+                a2 = int(bond["atom_2"])
+                if (a1 in tmpl_old_to_new_atom) and (a2 in tmpl_old_to_new_atom):
+                    new_bond = bond.copy()
+                    new_bond["atom_1"] = tmpl_old_to_new_atom[a1]
+                    new_bond["atom_2"] = tmpl_old_to_new_atom[a2]
+                    tmpl_kept_struct_bonds.append(new_bond)
+            if tmpl_kept_struct_bonds:
+                tmpl_struct_bonds_new = np.array(tmpl_kept_struct_bonds, dtype=BondV2)
+            else:
+                tmpl_struct_bonds_new = _empty_like_dtype(BondV2)
+
+            tmpl_structure_new = StructureV2(
+                atoms=tmpl_atoms_new,
+                bonds=tmpl_struct_bonds_new,
+                residues=template_struct.residues,
+                chains=template_struct.chains,
+                interfaces=template_struct.interfaces,
+                mask=template_struct.mask,
+                coords=tmpl_coords_new,
+                ensemble=tmpl_ensemble_new,
+                pocket=template_struct.pocket,
+            )
+            templates_new[template_id] = tmpl_structure_new
+            template_tokens_new[template_id] = tmpl_tokens
+
+            tmpl_bonds_all = None
+            if data.template_bonds is not None:
+                tmpl_bonds_all = data.template_bonds.get(template_id)
+            if tmpl_bonds_all is not None and len(tmpl_bonds_all) > 0:
+                kept_tmpl_bonds = []
+                for bond in tmpl_bonds_all:
+                    t1 = int(bond["token_1"])
+                    t2 = int(bond["token_2"])
+                    if (t1 in old_token_id_set) and (t2 in old_token_id_set):
+                        new_bond = bond.copy()
+                        if t1 in old_to_new_token:
+                            new_bond["token_1"] = old_to_new_token[t1]
+                        if t2 in old_to_new_token:
+                            new_bond["token_2"] = old_to_new_token[t2]
+                        kept_tmpl_bonds.append(new_bond)
+                if kept_tmpl_bonds:
+                    template_bonds_new[template_id] = np.array(
+                        kept_tmpl_bonds, dtype=tmpl_bonds_all.dtype
+                    )
+                else:
+                    template_bonds_new[template_id] = _empty_like_dtype(
+                        tmpl_bonds_all.dtype
+                    )
+            elif data.template_bonds is not None:
+                template_bonds_new[template_id] = _empty_like_dtype(TokenBondV2)
+
+        if len(templates_new) == 0:
+            templates_new = None
+            template_tokens_new = None
+            template_bonds_new = None
+
+    cropped = Tokenized(
+        tokens=tokens_old,
+        bonds=bonds_new,
+        structure=structure_new,
+        record=data.record,
+        templates=templates_new,
+        template_tokens=template_tokens_new,
+        template_bonds=template_bonds_new,
+        extra_mols=data.extra_mols,
+    )
+    return cropped, token_indices, atom_indices
 
 ####################################################################################################
 # HELPERS
@@ -308,7 +555,7 @@ def process_token_features(  # noqa: C901, PLR0915, PLR0912
     method_feature = from_numpy(method).long()
 
     # Token mask features
-    pad_mask = torch.ones(len(token_data), dtype=torch.float)
+    pad_mask = torch.ones(len(token_data), dtype=torch.bool)
     resolved_mask = from_numpy(token_data["resolved_mask"].copy()).float()
     disto_mask = from_numpy(token_data["disto_mask"].copy()).float()
 
@@ -1030,19 +1277,20 @@ def process_atom_features(
         idx_list = ensemble_features["ensemble_ref_idxs"]
 
     # Create distogram
-    disto_target = torch.zeros(L, L, len(idx_list), num_bins)  # TODO1
-
-    # disto_target = torch.zeros(L, L, num_bins)
-    for i, e_idx in enumerate(idx_list):
-        t_center = torch.Tensor(disto_coords_ensemble[:, e_idx, :])
-        t_dists = torch.cdist(t_center, t_center)
-        boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
-        distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-        # disto_target += one_hot(distogram, num_classes=num_bins)
-        disto_target[:, :, i, :] = one_hot(distogram, num_classes=num_bins)  # TODO1
-
-    # Normalize distogram
-    # disto_target = disto_target / disto_target.sum(-1)[..., None]  # remove TODO1
+    #
+    # NOTE(hfy): disto_target is not consumed in the current refinement path.
+    # Building full [L, L, K, num_bins] distograms causes OOM for large L.
+    # Keep a tiny placeholder tensor to preserve the feature interface.
+    #
+    # Original heavy logic intentionally disabled:
+    #   disto_target = torch.zeros(L, L, len(idx_list), num_bins)
+    #   for i, e_idx in enumerate(idx_list):
+    #       t_center = torch.Tensor(disto_coords_ensemble[:, e_idx, :])
+    #       t_dists = torch.cdist(t_center, t_center)
+    #       boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
+    #       distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
+    #       disto_target[:, :, i, :] = one_hot(distogram, num_classes=num_bins)
+    disto_target = torch.zeros(1, 1, 1, 1, dtype=torch.float32)
     atom_data = np.concatenate(atom_data)
     atom_name = np.concatenate(atom_name)
     atom_element = np.concatenate(atom_element)
@@ -1054,18 +1302,43 @@ def process_atom_features(
     
     num_atoms = len(atom_data)
     
-    # MODIFICATION: Added template coordinate extraction (lines 1672-1689)
-    # add by huangfuyao - extract template coordinates
+    # Template coords / mask for refinement conditioning.
+    # In crop-first mode templates may be absent; keep a safe fallback.
+    template_resolved_mask_np = atom_data["is_present"].copy()
     if data.templates and len(data.templates) > 0:
         first_key = next(iter(data.templates.keys()))  
         
         template_atoms = data.templates[first_key].atoms 
         template_coords_np = template_atoms["coords"]
         template_coords = torch.from_numpy(template_coords_np.copy()).unsqueeze(0)
+        if "is_present" in template_atoms.dtype.names:
+            template_resolved_mask_np = template_atoms["is_present"].copy()
     else:
         # No templates available, create dummy coordinates
         num_atoms = len(atom_data)
         template_coords = torch.zeros(1, num_atoms, 3, dtype=torch.float32)
+
+    # Defensive alignment: template arrays must match current cropped atom count.
+    if template_coords.shape[1] != num_atoms:
+        if template_coords.shape[1] > num_atoms:
+            template_coords = template_coords[:, :num_atoms, :]
+        else:
+            pad_atoms = num_atoms - template_coords.shape[1]
+            template_coords = torch.cat(
+                [
+                    template_coords,
+                    torch.zeros(1, pad_atoms, 3, dtype=template_coords.dtype),
+                ],
+                dim=1,
+            )
+    if len(template_resolved_mask_np) != num_atoms:
+        if len(template_resolved_mask_np) > num_atoms:
+            template_resolved_mask_np = template_resolved_mask_np[:num_atoms]
+        else:
+            pad_len_mask = num_atoms - len(template_resolved_mask_np)
+            template_resolved_mask_np = np.concatenate(
+                [template_resolved_mask_np, np.zeros(pad_len_mask, dtype=bool)]
+            )
 
     # Compute features
     disto_coords_ensemble = from_numpy(disto_coords_ensemble.copy())
@@ -1081,8 +1354,8 @@ def process_atom_features(
     ref_chirality = from_numpy(atom_chirality.copy()).long()
     coords = from_numpy(coord_data.copy())
     resolved_mask = from_numpy(atom_data["is_present"].copy())
-    template_resolved_mask = from_numpy(template_atoms['is_present'].copy()) # add by hfy 20250817
-    pad_mask = torch.ones(len(atom_data), dtype=torch.float)
+    template_resolved_mask = from_numpy(template_resolved_mask_np)
+    pad_mask = torch.ones(len(atom_data), dtype=torch.bool)
     atom_to_token = torch.tensor(atom_to_token, dtype=torch.long)
     token_to_rep_atom = torch.tensor(token_to_rep_atom, dtype=torch.long)
     r_set_to_rep_atom = torch.tensor(r_set_to_rep_atom, dtype=torch.long)
@@ -1125,9 +1398,12 @@ def process_atom_features(
     ref_atom_name_chars = one_hot(ref_atom_name_chars, num_classes=64)
     ref_element = one_hot(ref_element, num_classes=const.num_elements)
     atom_to_token = one_hot(atom_to_token, num_classes=token_id + 1)
-    token_to_rep_atom = one_hot(token_to_rep_atom, num_classes=len(atom_data))
-    r_set_to_rep_atom = one_hot(r_set_to_rep_atom, num_classes=len(atom_data))
-    token_to_center_atom = one_hot(token_to_center_atom, num_classes=len(atom_data))
+    # NOTE(hfy): The following atom-token mapping one-hot features are not consumed
+    # by the current CryoNetRefine refinement/model path, but they are extremely
+    # memory-heavy for large systems (O(N_token * N_atom)).
+    # token_to_rep_atom = one_hot(token_to_rep_atom, num_classes=len(atom_data))
+    # r_set_to_rep_atom = one_hot(r_set_to_rep_atom, num_classes=len(atom_data))
+    # token_to_center_atom = one_hot(token_to_center_atom, num_classes=len(atom_data))
     # Center the ground truth coordinates
     center = (coords * resolved_mask[None, :, None]).sum(dim=1)
     center = center / resolved_mask.sum().clamp(min=1)
@@ -1154,48 +1430,45 @@ def process_atom_features(
     # Compute padding and apply
     if max_atoms is not None:
         assert max_atoms % atoms_per_window_queries == 0
-        pad_len = max_atoms - len(atom_data)
+        atom_pad_len = max_atoms - len(atom_data)
     else:
-        pad_len = (
+        atom_pad_len = (
             (len(atom_data) - 1) // atoms_per_window_queries + 1
         ) * atoms_per_window_queries - len(atom_data)
 
-    if pad_len > 0:
-        pad_mask = pad_dim(pad_mask, 0, pad_len)
-        ref_pos = pad_dim(ref_pos, 0, pad_len)
-        resolved_mask = pad_dim(resolved_mask, 0, pad_len)
-        template_resolved_mask = pad_dim(template_resolved_mask, 0, pad_len) # add by hfy 20250817
+    if atom_pad_len > 0:
+        pad_mask = pad_dim(pad_mask, 0, atom_pad_len)
+        ref_pos = pad_dim(ref_pos, 0, atom_pad_len)
+        resolved_mask = pad_dim(resolved_mask, 0, atom_pad_len)
+        template_resolved_mask = pad_dim(template_resolved_mask, 0, atom_pad_len) # add by hfy 20250817
         
 
-        ref_atom_name_chars = pad_dim(ref_atom_name_chars, 0, pad_len)
-        ref_element = pad_dim(ref_element, 0, pad_len)
-        ref_charge = pad_dim(ref_charge, 0, pad_len)
-        ref_chirality = pad_dim(ref_chirality, 0, pad_len)
-        backbone_feat_index = pad_dim(backbone_feat_index, 0, pad_len)
-        ref_space_uid = pad_dim(ref_space_uid, 0, pad_len)
-        coords = pad_dim(coords, 1, pad_len)  # Pad on dimension 1 to reach specified length
-        template_coords = pad_dim(template_coords, 1, pad_len)
+        ref_atom_name_chars = pad_dim(ref_atom_name_chars, 0, atom_pad_len)
+        ref_element = pad_dim(ref_element, 0, atom_pad_len)
+        ref_charge = pad_dim(ref_charge, 0, atom_pad_len)
+        ref_chirality = pad_dim(ref_chirality, 0, atom_pad_len)
+        backbone_feat_index = pad_dim(backbone_feat_index, 0, atom_pad_len)
+        ref_space_uid = pad_dim(ref_space_uid, 0, atom_pad_len)
+        coords = pad_dim(coords, 1, atom_pad_len)  # Pad on dimension 1 to reach specified length
+        template_coords = pad_dim(template_coords, 1, atom_pad_len)
 
-        atom_to_token = pad_dim(atom_to_token, 0, pad_len)
-        token_to_rep_atom = pad_dim(token_to_rep_atom, 1, pad_len)
-        token_to_center_atom = pad_dim(token_to_center_atom, 1, pad_len)
-        r_set_to_rep_atom = pad_dim(r_set_to_rep_atom, 1, pad_len)
-        bfactor = pad_dim(bfactor, 0, pad_len)
-        plddt = pad_dim(plddt, 0, pad_len)
+        atom_to_token = pad_dim(atom_to_token, 0, atom_pad_len)
+        # token_to_rep_atom/r_set_to_rep_atom/token_to_center_atom disabled
+        bfactor = pad_dim(bfactor, 0, atom_pad_len)
+        plddt = pad_dim(plddt, 0, atom_pad_len)
 
     if max_tokens is not None:
-        pad_len = max_tokens - token_to_rep_atom.shape[0]
-        if pad_len > 0:
-            atom_to_token = pad_dim(atom_to_token, 1, pad_len)
-            token_to_rep_atom = pad_dim(token_to_rep_atom, 0, pad_len)
-            r_set_to_rep_atom = pad_dim(r_set_to_rep_atom, 0, pad_len)
-            token_to_center_atom = pad_dim(token_to_center_atom, 0, pad_len)
-            disto_target = pad_dim(pad_dim(disto_target, 0, pad_len), 1, pad_len)
-            disto_coords_ensemble = pad_dim(disto_coords_ensemble, 1, pad_len)
+        token_pad_len = max_tokens - atom_to_token.shape[1]
+        if token_pad_len > 0:
+            atom_to_token = pad_dim(atom_to_token, 1, token_pad_len)
+            disto_target = pad_dim(
+                pad_dim(disto_target, 0, token_pad_len), 1, token_pad_len
+            )
+            disto_coords_ensemble = pad_dim(disto_coords_ensemble, 1, token_pad_len)
 
             if compute_frames:
-                frames = pad_dim(frames, 1, pad_len)
-                frame_resolved_mask = pad_dim(frame_resolved_mask, 1, pad_len)
+                frames = pad_dim(frames, 1, token_pad_len)
+                frame_resolved_mask = pad_dim(frame_resolved_mask, 1, token_pad_len)
             
 
     atom_features = {
@@ -1212,9 +1485,9 @@ def process_atom_features(
         "template_resolved_mask": template_resolved_mask, # add by hfy 20250817
         "atom_pad_mask": pad_mask,
         "atom_to_token": atom_to_token,
-        "token_to_rep_atom": token_to_rep_atom,
-        "r_set_to_rep_atom": r_set_to_rep_atom,
-        "token_to_center_atom": token_to_center_atom,
+        # "token_to_rep_atom": token_to_rep_atom,
+        # "r_set_to_rep_atom": r_set_to_rep_atom,
+        # "token_to_center_atom": token_to_center_atom,
         "disto_target": disto_target,
         "disto_coords_ensemble": disto_coords_ensemble,
         "bfactor": bfactor,
@@ -1224,7 +1497,7 @@ def process_atom_features(
         atom_features["frames_idx"] = frames
         atom_features["frame_resolved_mask"] = frame_resolved_mask
 
-    return atom_features,pad_len
+    return atom_features, atom_pad_len
 
 
 
@@ -1534,6 +1807,33 @@ def process_ensemble_features(
 class BoltzFeaturizer:
     """Boltz featurizer."""
 
+    def process_crop(
+        self,
+        data: Tokenized,
+        crop_token_indices: np.ndarray,
+        random: np.random.Generator,
+        molecules: dict[str, Mol],
+        **kwargs,
+    ) -> tuple[dict[str, Tensor], np.ndarray, np.ndarray]:
+        """Compute features for one crop defined by global token indices.
+
+        Returns
+        -------
+        tuple[dict[str, Tensor], np.ndarray, np.ndarray]
+            (features, global_token_indices, global_atom_indices)
+        """
+        cropped, token_indices, atom_indices = build_tokenized_subgraph(
+            data=data,
+            crop_token_indices=crop_token_indices,
+        )
+        features = self.process(
+            data=cropped,
+            random=random,
+            molecules=molecules,
+            **kwargs,
+        )
+        return features, token_indices, atom_indices
+
     def process(
         self,
         data: Tokenized,
@@ -1648,8 +1948,6 @@ class BoltzFeaturizer:
             )
         template_features['template_atom_present_mask'] = pad_dim(template_features['template_atom_present_mask'], 1, atom_pad_len)
         template_features['token_present_mask'] = pad_dim(template_features['token_present_mask'], 1, token_pad_len)
-        
-   
         
         return {
             **token_features,
