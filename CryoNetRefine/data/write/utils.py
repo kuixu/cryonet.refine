@@ -1,4 +1,5 @@
 import string
+import json
 from pathlib import Path
 from dataclasses import replace
 from collections.abc import Iterator
@@ -27,6 +28,20 @@ def generate_tags() -> Iterator[str]:
                     % len(string.ascii_uppercase)
                 ]
             yield tag
+
+
+def _load_restraint_bonds(data_dir: Path, record_id: str) -> list[dict]:
+    constraints_path = data_dir.parent / "constraints" / f"{record_id}.json"
+    if not constraints_path.exists():
+        return []
+    try:
+        payload = json.loads(constraints_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    bonds = payload.get("bonds", [])
+    if isinstance(bonds, list):
+        return [b for b in bonds if isinstance(b, dict)]
+    return []
 
 
 
@@ -399,11 +414,12 @@ def write_refined_structure(batch, refined_coords,data_dir,output_path):
                     valid=True,
                 )
                 chain_info.append(new_chain_info)
+            restraint_bonds = _load_restraint_bonds(data_dir, record.id)
             # Save the CIF structure
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w") as f:
                 # f.write(to_pdb(new_structure, plddts=None))
-                f.write(to_mmcif(new_structure, plddts=None))
+                f.write(to_mmcif(new_structure, plddts=None, restraint_bonds=restraint_bonds))
         except Exception as e:
             print(f"Error saving CIF structure: {e}")
             import traceback
@@ -592,10 +608,11 @@ def write_refined_structure_cif_by_crop(predicted_coords, feats, data_dir, outpu
             ensemble=crop_ensemble,
             pocket=None,
         )
+        restraint_bonds = _load_restraint_bonds(data_dir, record.id)
         # Write PDB
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w") as f:
-            f.write(to_mmcif(crop_structure, plddts=None))
+            f.write(to_mmcif(crop_structure, plddts=None, restraint_bonds=restraint_bonds))
 
         return  # Molecule-aware path completed
 
@@ -680,10 +697,11 @@ def write_refined_structure_cif(batch, refined_coords,data_dir,output_path):
                     valid=True,
                 )
                 chain_info.append(new_chain_info)
+            restraint_bonds = _load_restraint_bonds(data_dir, record.id)
             # Save the CIF structure
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with output_path.open("w") as f:
-                f.write(to_mmcif(new_structure, plddts=None))
+                f.write(to_mmcif(new_structure, plddts=None, restraint_bonds=restraint_bonds))
         except Exception as e:
             print(f"Error saving CIF structure: {e}")
             import traceback

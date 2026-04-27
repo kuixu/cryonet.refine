@@ -15,6 +15,7 @@ from modelcif import Assembly, AsymUnit, Entity, System, dumper
 from modelcif.model import AbInitioModel, Atom, ModelGroup
 from rdkit import Chem
 from torch import Tensor
+import numpy as np
 
 def to_mmcif_old(
     structure: Structure,
@@ -369,22 +370,36 @@ def _infer_element_symbol(atom_name: str, res_name: str) -> str:
         element = atom_key[0] if atom_key else "C"
     return str(element).upper()
 
+def _token(value: Any) -> str:
+    if value is None:
+        return "?"
+    text = str(value).strip()
+    if text == "":
+        return "?"
+    if re.search(r"\s", text) or "'" in text or '"' in text or text.startswith("_") or "#" in text:
+        return "'" + text.replace("'", "''") + "'"
+    return text
+
+
+def _is_metal_element(element: str) -> bool:
+    return str(element).upper() in {
+        "ZN", "CA", "MG", "NA", "MN", "K", "FE", "CU", "CD", "HG", "NI", "CO", "SR", "CS",
+        "PT", "BA", "TL", "PB", "SM", "AU", "RB", "YB", "LI", "MO", "LU", "CR", "OS", "GD",
+        "TB", "LA", "AG", "HO", "GA", "CE", "W", "RU", "RE", "PR", "IR", "EU", "AL", "V",
+        "PD", "U", "SB", "SE", "TE",
+    }
+
+
 def to_mmcif(
     structure: Structure | StructureV2,
     plddts: Optional[Any] = None,
+    restraint_bonds: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """
     Write an mmCIF string directly (no modelcif/ihm, no gemmi mmCIF writer),
     always emitting a complete `_atom_site` loop compatible with iotbx/mmtbx.
-
-    Key semantics:
-    - `_atom_site.label_asym_id` uses your original (possibly long) chain IDs.
-    - `_atom_site.auth_asym_id` uses a short unique ID (<=2 chars) for cctbx.
     """
 
-    # -------------------------
-    # 1️⃣ Build entity grouping (sequence, mol_type) -> entity_id
-    # -------------------------
     entity_map: dict[tuple[tuple[str, ...], int], int] = {}
     entity_id_counter = 1
     for chain in structure.chains:
@@ -393,34 +408,59 @@ def to_mmcif(
             entity_map[key] = entity_id_counter
             entity_id_counter += 1
 
-    # label_asym_id -> short auth_asym_id
     label_to_auth = _build_chain_id_maps(structure.chains)
     chain_fields = set(structure.chains.dtype.names or [])
     residue_fields = set(structure.residues.dtype.names or [])
 
-    # label_asym_id -> entity_id
     label_to_entity_id: dict[str, int] = {}
     for chain in structure.chains:
         long_id = str(chain["name"])
         label_to_entity_id[long_id] = int(entity_map[_entity_key(structure, chain)])
-
-    # -------------------------
-    # 2️⃣ Emit minimal header
-    # -------------------------
     lines: list[str] = []
-    lines.append("data_model\n")
+    lines.append(f"data_model\n")
     lines.append("_entry.id model\n")
     lines.append("\n")
-    # IMPORTANT (cryo-EM): do NOT emit crystallographic unit cell / symmetry.
-    # A fake small unit cell (e.g. 1x1x1) makes mmtbx/pdb_interpretation reject the
-    # model ("Unit cell volume is incompatible with number of atoms").
-    # When crystal symmetry is absent, callers typically use:
-    #   substitute_non_crystallographic_unit_cell_if_necessary=True
-    # which will create a large non-crystallographic unit cell automatically.
 
-    # -------------------------
-    # 3️⃣ _atom_site loop (iotbx-required)
-    # -------------------------
+    lines.append("loop_\n")
+    lines.append("_entity.id\n")
+    lines.append("_entity.type\n")
+    for (seq, mol_type), ent_id in sorted(entity_map.items(), key=lambda kv: kv[1]):
+        if int(mol_type) == int(const.chain_type_ids["NONPOLYMER"]):
+            ent_type = "non-polymer"
+        else:
+            ent_type = "polymer"
+        lines.append(f"{ent_id} {ent_type}\n")
+    lines.append("\n")
+
+    polymer_rows: list[tuple[int, str, int, tuple[str, ...]]] = []
+    for (seq, mol_type), ent_id in sorted(entity_map.items(), key=lambda kv: kv[1]):
+        mt = int(mol_type)
+        if mt == int(const.chain_type_ids["PROTEIN"]):
+            poly_type = "polypeptide(L)"
+        elif mt == int(const.chain_type_ids["DNA"]):
+            poly_type = "polydeoxyribonucleotide"
+        elif mt == int(const.chain_type_ids["RNA"]):
+            poly_type = "polyribonucleotide"
+        else:
+            continue
+        polymer_rows.append((ent_id, poly_type, mt, seq))
+
+    if polymer_rows:
+        lines.append("loop_\n")
+        lines.append("_entity_poly.entity_id\n")
+        lines.append("_entity_poly.type\n")
+        for ent_id, poly_type, _, _ in polymer_rows:
+            lines.append(f"{ent_id} {poly_type}\n")
+        lines.append("\n")
+        lines.append("loop_\n")
+        lines.append("_entity_poly_seq.entity_id\n")
+        lines.append("_entity_poly_seq.num\n")
+        lines.append("_entity_poly_seq.mon_id\n")
+        for ent_id, _, _, seq in polymer_rows:
+            for i, mon in enumerate(seq, start=1):
+                lines.append(f"{ent_id} {i} {str(mon)[:3]}\n")
+        lines.append("\n")
+
     tags = [
         "_atom_site.group_PDB",
         "_atom_site.id",
@@ -437,8 +477,8 @@ def to_mmcif(
         "_atom_site.Cartn_z",
         "_atom_site.occupancy",
         "_atom_site.B_iso_or_equiv",
+        "_atom_site.pdbx_formal_charge",
         "_atom_site.auth_seq_id",
-        "_atom_site.auth_comp_id",
         "_atom_site.auth_asym_id",
         "_atom_site.pdbx_PDB_model_num",
     ]
@@ -447,6 +487,8 @@ def to_mmcif(
         lines.append(f"{t}\n")
 
     atom_id = 1
+    atom_meta_by_idx: dict[int, dict[str, Any]] = {}
+    atom_lookup: dict[tuple[str, str, str, str], int] = {}
     for chain in structure.chains:
         long_id = str(chain["name"])
         if "auth_asym_id" in chain_fields:
@@ -465,7 +507,6 @@ def to_mmcif(
 
         for residue in residues:
             res_name_full = str(residue["name"])
-            # comp_id = "LIG" if is_nonpoly else res_name_full[:3]
             comp_id = res_name_full[:3]
             label_seq_id = int(residue["res_idx"]) + 1
             auth_seq_id = str(label_seq_id)
@@ -477,19 +518,22 @@ def to_mmcif(
             auth_comp_id = comp_id
             if "auth_comp_id" in residue_fields:
                 auth_comp_id = str(residue["auth_comp_id"]).strip() or comp_id
+            if is_nonpoly:
+                # For ligands/ions, keep label_seq_id aligned with auth numbering
+                # so each ion is represented as a distinct residue in downstream parsers.
+                label_seq_id_token = auth_seq_id
+            else:
+                label_seq_id_token = str(label_seq_id)
 
             atom_start = int(residue["atom_idx"])
             atom_end = int(residue["atom_idx"] + residue["atom_num"])
             atoms = structure.atoms[atom_start:atom_end]
 
-            for atom in atoms:
+            for atom_offset, atom in enumerate(atoms):
                 if "is_present" in atoms.dtype.names and not bool(atom["is_present"]):
                     continue
 
                 atom_name = str(atom["name"]).strip()
-                # if atom_name == "OXT":
-                #     continue
-
                 coords = atom["coords"]
                 x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
                 b = float(atom["bfactor"]) if "bfactor" in atoms.dtype.names else 1.0
@@ -504,19 +548,141 @@ def to_mmcif(
                     comp_id,
                     label_id,
                     str(ent_id),
-                    str(label_seq_id),
+                    label_seq_id_token,
                     ins_code,
                     f"{x:.5f}",
                     f"{y:.5f}",
                     f"{z:.5f}",
                     "1",
                     f"{b:.2f}",
+                    "?",
                     auth_seq_id,
-                    auth_comp_id,
                     auth_id,
                     "1",
                 ]
                 lines.append(" ".join(row) + "\n")
+                atom_idx_global = atom_start + atom_offset
+                atom_meta_by_idx[atom_idx_global] = {
+                    "label_asym_id": label_id,
+                    "label_comp_id": comp_id,
+                    "label_seq_id": label_seq_id_token,
+                    "auth_asym_id": auth_id,
+                    "auth_comp_id": auth_comp_id,
+                    "auth_seq_id": auth_seq_id,
+                    "atom_name": atom_name,
+                    "element": element,
+                }
+                atom_lookup[(auth_id, auth_seq_id, auth_comp_id, atom_name)] = atom_idx_global
                 atom_id += 1
+
+    struct_conn_rows: list[list[str]] = []
+    seen_conn: set[tuple[int, int, str]] = set()
+
+    def append_struct_conn(atom_idx1: int, atom_idx2: int, conn_type: str, distance: float | None = None) -> None:
+        if atom_idx1 not in atom_meta_by_idx or atom_idx2 not in atom_meta_by_idx:
+            return
+        key = (min(atom_idx1, atom_idx2), max(atom_idx1, atom_idx2), conn_type)
+        if key in seen_conn:
+            return
+        seen_conn.add(key)
+        m1 = atom_meta_by_idx[atom_idx1]
+        m2 = atom_meta_by_idx[atom_idx2]
+        dist_val = "?"
+        if distance is not None and np.isfinite(distance):
+            dist_val = f"{float(distance):.3f}"
+        p1_label_seq = m1["auth_seq_id"] 
+        p2_label_seq = m2["auth_seq_id"] 
+        struct_conn_rows.append(
+            [
+                f"{conn_type}{len(struct_conn_rows)+1}",
+                conn_type,
+                _token(m1["label_asym_id"]),
+                _token(m1["label_comp_id"]),
+                _token(p1_label_seq),
+                _token(m1["atom_name"]),
+                ".",
+                _token(m1["auth_asym_id"]),
+                _token(m1["auth_comp_id"]),
+                _token(m1["auth_seq_id"]),
+                _token(m2["label_asym_id"]),
+                _token(m2["label_comp_id"]),
+                _token(p2_label_seq),
+                _token(m2["atom_name"]),
+                ".",
+                _token(m2["auth_asym_id"]),
+                _token(m2["auth_comp_id"]),
+                _token(m2["auth_seq_id"]),
+                dist_val,
+            ]
+        )
+
+    for bond in getattr(structure, "bonds", []):
+        atom_idx1 = int(bond["atom_idx_1"])
+        atom_idx2 = int(bond["atom_idx_2"])
+        m1 = atom_meta_by_idx.get(atom_idx1)
+        m2 = atom_meta_by_idx.get(atom_idx2)
+        if m1 is None or m2 is None:
+            continue
+        coords1 = np.asarray(structure.atoms[atom_idx1]["coords"], dtype=float)
+        coords2 = np.asarray(structure.atoms[atom_idx2]["coords"], dtype=float)
+        dist = float(np.linalg.norm(coords1 - coords2))
+        conn_type = "metalc" if (_is_metal_element(m1["element"]) or _is_metal_element(m2["element"])) else "covale"
+        append_struct_conn(atom_idx1, atom_idx2, conn_type, dist)
+
+    for rb in restraint_bonds or []:
+        a1 = rb.get("atom1", {})
+        a2 = rb.get("atom2", {})
+        key1 = (
+            str(a1.get("auth_asym_id", "")).strip(),
+            str(a1.get("auth_seq_id", "")).strip(),
+            str(a1.get("auth_comp_id", "")).strip(),
+            str(a1.get("atom_name", "")).strip(),
+        )
+        key2 = (
+            str(a2.get("auth_asym_id", "")).strip(),
+            str(a2.get("auth_seq_id", "")).strip(),
+            str(a2.get("auth_comp_id", "")).strip(),
+            str(a2.get("atom_name", "")).strip(),
+        )
+        atom_idx1 = atom_lookup.get(key1)
+        atom_idx2 = atom_lookup.get(key2)
+        if atom_idx1 is None or atom_idx2 is None:
+            continue
+        m1 = atom_meta_by_idx.get(atom_idx1)
+        m2 = atom_meta_by_idx.get(atom_idx2)
+        if m1 is None or m2 is None:
+            continue
+        conn_type = "metalc" if (_is_metal_element(m1["element"]) or _is_metal_element(m2["element"])) else "covale"
+        dist = rb.get("distance_ideal")
+        append_struct_conn(atom_idx1, atom_idx2, conn_type, float(dist) if dist is not None else None)
+
+    if struct_conn_rows:
+        lines.append("#\n")
+        lines.append("loop_\n")
+        struct_conn_tags = [
+            "_struct_conn.id",
+            "_struct_conn.conn_type_id",
+            "_struct_conn.ptnr1_label_asym_id",
+            "_struct_conn.ptnr1_label_comp_id",
+            "_struct_conn.ptnr1_label_seq_id",
+            "_struct_conn.ptnr1_label_atom_id",
+            "_struct_conn.pdbx_ptnr1_label_alt_id",
+            "_struct_conn.ptnr1_auth_asym_id",
+            "_struct_conn.ptnr1_auth_comp_id",
+            "_struct_conn.ptnr1_auth_seq_id",
+            "_struct_conn.ptnr2_label_asym_id",
+            "_struct_conn.ptnr2_label_comp_id",
+            "_struct_conn.ptnr2_label_seq_id",
+            "_struct_conn.ptnr2_label_atom_id",
+            "_struct_conn.pdbx_ptnr2_label_alt_id",
+            "_struct_conn.ptnr2_auth_asym_id",
+            "_struct_conn.ptnr2_auth_comp_id",
+            "_struct_conn.ptnr2_auth_seq_id",
+            "_struct_conn.pdbx_dist_value",
+        ]
+        for tag in struct_conn_tags:
+            lines.append(f"{tag}\n")
+        for row in struct_conn_rows:
+            lines.append(" ".join(row) + "\n")
 
     return "".join(lines)
