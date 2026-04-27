@@ -453,6 +453,7 @@ def to_mmcif(
             auth_id = str(chain["auth_asym_id"]).strip() or long_id
         else:
             auth_id = label_to_auth.get(long_id, long_id[:2])
+        label_id = auth_id
         ent_id = label_to_entity_id.get(long_id, 1)
 
         is_nonpoly = int(chain["mol_type"]) == int(const.chain_type_ids["NONPOLYMER"])
@@ -501,7 +502,7 @@ def to_mmcif(
                     atom_name,
                     ".",
                     comp_id,
-                    long_id,
+                    label_id,
                     str(ent_id),
                     str(label_seq_id),
                     ins_code,

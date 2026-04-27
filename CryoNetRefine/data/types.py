@@ -598,6 +598,7 @@ class Target:
     sequences: Optional[dict[str, str]] = None
     templates: Optional[dict[str, StructureV2]] = None
     extra_mols: Optional[dict[str]] = None # fix by huangfuyao 2025-10-10 to avoid rdkit dependency
+    default_user_restraints: Optional[dict] = None
     # extra_mols: Optional[dict[str, Mol]] = None
 
 

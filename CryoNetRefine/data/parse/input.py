@@ -1,5 +1,6 @@
 # Portions of this file are adapted from the original Boltz project:
 # https://huggingface.co/boltz-community/boltz-2  (GNU GPL v3)
+import json
 import pickle
 from dataclasses import dataclass, field
 from functools import partial
@@ -52,11 +53,18 @@ class RefineArgs:
         "ramaz": 0.1,
         "clash": 0.01,
         "nonbonded" : 50,
+        "user_bond": 1.0,
+        "user_angle": 1.0,
     })
     use_global_clash: bool = False
     data_dir: str | None = None
     use_molecule_aware_cropping: bool = True 
     min_improvement = 0
+    restraints_file: str | None = None
+    use_user_restraints: bool = False
+    auto_metal_restraints: bool = True
+    metal_restraint_distance_strategy: str = "input"
+    metal_coordination_cutoff: float = 3.0
 
 
 
@@ -135,14 +143,25 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     ccd: dict,
     mol_dir: Path,
     processed_templates_dir: Path,
+    processed_constraints_dir: Path,
     processed_mols_dir: Path,
     records_dir: Path,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> None:
     try:
         # Parse data
         if path.suffix.lower() in (".cif", ".pdb"):
             from CryoNetRefine.data.parse.schema import parse_refine_schema
-            target = parse_refine_schema(path, ccd, mol_dir) # add by huangfuyao
+            target = parse_refine_schema(
+                path,
+                ccd,
+                mol_dir,
+                auto_metal_restraints=auto_metal_restraints,
+                metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+                metal_coordination_cutoff=metal_coordination_cutoff,
+            )
         elif path.is_dir():
             msg = f"Found directory {path} instead of .fasta or .yaml, skipping."
             raise RuntimeError(msg) 
@@ -163,6 +182,16 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
         # Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
         with (processed_mols_dir / f"{target.record.id}.pkl").open("wb") as f:
             pickle.dump(target.extra_mols, f)
+        
+        constraints_path = processed_constraints_dir / f"{target.record.id}.json"
+        constraints_path.write_text(
+            json.dumps(
+                target.default_user_restraints or {"bonds": [], "angles": []},
+                ensure_ascii=True,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         # Dump record
         record_path = records_dir / f"{target.record.id}.json"
@@ -181,6 +210,9 @@ def process_inputs(
     out_dir: Path, # /home/huangfuyao/proj/boltz/out/boltz_results_6cvm_A_200AA
     mol_dir: Path,
     preprocessing_threads: int = 1,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> Manifest:
     """Process the input data and output directory.
     Parameters
@@ -221,11 +253,13 @@ def process_inputs(
     # Create output directories
     records_dir = out_dir / f"processed_{data_stem}" / "records"
     processed_templates_dir = out_dir / f"processed_{data_stem}" / "templates"
+    processed_constraints_dir = out_dir / f"processed_{data_stem}" / "constraints"
     processed_mols_dir = out_dir / f"processed_{data_stem}" / "mols"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     records_dir.mkdir(parents=True, exist_ok=True)
     processed_templates_dir.mkdir(parents=True, exist_ok=True)
+    processed_constraints_dir.mkdir(parents=True, exist_ok=True)
     processed_mols_dir.mkdir(parents=True, exist_ok=True)
 
     # Load CCD
@@ -237,8 +271,12 @@ def process_inputs(
         ccd=ccd,
         mol_dir=mol_dir,
         processed_templates_dir=processed_templates_dir,
+        processed_constraints_dir=processed_constraints_dir,
         processed_mols_dir=processed_mols_dir,
         records_dir=records_dir,
+        auto_metal_restraints=auto_metal_restraints,
+        metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+        metal_coordination_cutoff=metal_coordination_cutoff,
     )
 
     # Parse input data

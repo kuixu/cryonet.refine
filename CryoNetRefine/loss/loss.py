@@ -3,9 +3,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from CryoNetRefine.data import const
+from CryoNetRefine.data.parse.restraints import ResolvedUserRestraints
 from CryoNetRefine.data.write.utils import write_refined_structure_cif, write_refined_structure_cif_by_crop, write_refined_structure_pdb, write_refined_structure_pdb_by_crop
 from CryoNetRefine.libs.density.density import DensityInfo, mol_atom_density
 from CryoNetRefine.loss.geometric import GeometricAdapter, GeometricMetricWrapper
+from CryoNetRefine.loss.user_restraints import compute_user_restraint_losses
 
 def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weights=None):
     """
@@ -404,7 +406,20 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
     os.system(f"rm {output_path}")
     return loss_dict, time_loss_dict
 
-def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometric_adapter=None, geometric_wrapper=None, atom_weights=None, final_global_refined_coords=None, global_feats=None, use_global_clash=None):
+def refine_loss(
+    crop_idx,
+    predicted_coords,
+    target_density,
+    feats,
+    args,
+    geometric_adapter=None,
+    geometric_wrapper=None,
+    atom_weights=None,
+    final_global_refined_coords=None,
+    global_feats=None,
+    use_global_clash=None,
+    user_restraints: ResolvedUserRestraints | None = None,
+):
     device = predicted_coords.device
     weights = args.weight_dict
 
@@ -498,6 +513,22 @@ def refine_loss(crop_idx, predicted_coords, target_density, feats, args, geometr
         time_loss_dict["rotamer"] = 0.0
         time_loss_dict["cbeta"] = 0.0
         time_loss_dict["ramaz"] = 0.0
+
+    restraint_coords = None
+    if final_global_refined_coords is not None:
+        restraint_coords = final_global_refined_coords
+    elif predicted_coords is not None:
+        restraint_coords = predicted_coords
+    user_losses = compute_user_restraint_losses(restraint_coords, user_restraints)
+    user_bond_w = float(weights.get("user_bond", 0.0))
+    user_angle_w = float(weights.get("user_angle", 0.0))
+    loss_dict["user_bond"] = user_losses["user_bond"] * user_bond_w
+    loss_dict["user_angle"] = user_losses["user_angle"] * user_angle_w
+    total_loss = (
+        total_loss
+        + user_bond_w * user_losses["user_bond"]
+        + user_angle_w * user_losses["user_angle"]
+    )
     
     time_loss_dict["CC_time"] = CC_time
     time_loss_dict["total_loss_time"] = time.time() - start_time

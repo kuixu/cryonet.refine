@@ -8,7 +8,7 @@ name=$(cat $d/name.list)
 out_dir=$d/${name}
 map=${out_dir}.mrc
 stg=$d/status
-
+restraints_file=$d/user_restraints.json
 cif_filename=$(jq -r '.pdbfile_local | split("/")[-1]' $stg)
 cif=${d}/${cif_filename}
 
@@ -35,7 +35,10 @@ date >$log;
 # fi  
 
 max_tokens=1000
-
+restraint_flags=()
+if [ -n "$restraints_file" ]; then
+    restraint_flags+=(--use_user_restraints --restraints_file "$restraints_file")
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Starting CryoNet.Refine..."
 echo "Input model   : $cif"
@@ -53,6 +56,7 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     --out_suffix CryoNet.Refine \
     --max_tokens $max_tokens \
     --validate_output \
+    "${restraint_flags[@]}" \
  
 echo "CryoNet.Refine refinement completed!"
 

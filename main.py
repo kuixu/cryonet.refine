@@ -38,6 +38,12 @@ from CryoNetRefine.data.parse.input import (
     BoltzProcessedInput, DiffusionParams, model_args,
     PairformerArgs, check_inputs, process_inputs
 )
+from CryoNetRefine.data.parse.restraints import (
+    ResolvedUserRestraints,
+    load_user_restraints,
+    merge_user_restraints_specs,
+    resolve_user_restraints,
+)
 from CryoNetRefine.data.parse.validate import validate_inputs
 from CryoNetRefine.data.output.metrics_validation import run_validation
 from CryoNetRefine.libs.density.density import DensityInfo
@@ -304,6 +310,70 @@ def build_lightweight_global_batch(case) -> dict:
         "ref_element": ref_element.long(),
     }
 
+
+def report_restraint_deviation(
+    record_id: str,
+    coords: torch.Tensor,
+    restraints: ResolvedUserRestraints | None,
+) -> None:
+    """Print final deviation between refined geometry and restraint ideals."""
+    if restraints is None:
+        return
+    if coords.ndim == 3:
+        coords = coords[0]
+    if coords.ndim != 2 or coords.shape[-1] != 3:
+        return
+
+    bond_abs_deltas: list[tuple[float, str]] = []
+    angle_abs_deltas: list[tuple[float, str]] = []
+    atom_lookup = restraints.atom_lookup or {}
+
+    for bond in restraints.bonds:
+        v = coords[bond.atom_idx1] - coords[bond.atom_idx2]
+        dist = torch.linalg.norm(v).item()
+        delta = dist - float(bond.distance_ideal)
+        desc = (
+            f"{atom_lookup.get(bond.atom_idx1, str(bond.atom_idx1))} <-> "
+            f"{atom_lookup.get(bond.atom_idx2, str(bond.atom_idx2))}"
+        )
+        bond_abs_deltas.append((abs(delta), desc))
+
+    for angle in restraints.angles:
+        v1 = coords[angle.atom_idx1] - coords[angle.atom_idx2]
+        v2 = coords[angle.atom_idx3] - coords[angle.atom_idx2]
+        n1 = torch.linalg.norm(v1)
+        n2 = torch.linalg.norm(v2)
+        if n1.item() == 0.0 or n2.item() == 0.0:
+            continue
+        cos_theta = torch.clamp(torch.dot(v1, v2) / (n1 * n2), min=-1.0 + 1e-7, max=1.0 - 1e-7)
+        model_angle = torch.rad2deg(torch.acos(cos_theta)).item()
+        delta = model_angle - float(angle.angle_ideal_deg)
+        desc = (
+            f"{atom_lookup.get(angle.atom_idx1, str(angle.atom_idx1))} - "
+            f"{atom_lookup.get(angle.atom_idx2, str(angle.atom_idx2))} - "
+            f"{atom_lookup.get(angle.atom_idx3, str(angle.atom_idx3))}"
+        )
+        angle_abs_deltas.append((abs(delta), desc))
+
+    if bond_abs_deltas:
+        bond_vals = [x[0] for x in bond_abs_deltas]
+        click.echo(
+            f"[{record_id}] Bond restraint deviation |mean abs|={np.mean(bond_vals):.4f} A, "
+            f"max abs={np.max(bond_vals):.4f} A, n={len(bond_vals)}"
+        )
+        worst = sorted(bond_abs_deltas, key=lambda x: x[0], reverse=True)[:3]
+        for value, desc in worst:
+            click.echo(f"  - worst bond deviation for first 3 atoms: |delta|={value:.4f} A :: {desc}")
+    if angle_abs_deltas:
+        angle_vals = [x[0] for x in angle_abs_deltas]
+        click.echo(
+            f"[{record_id}] Angle restraint deviation |mean abs|={np.mean(angle_vals):.3f} deg, "
+            f"max abs={np.max(angle_vals):.3f} deg, n={len(angle_vals)}"
+        )
+        worst = sorted(angle_abs_deltas, key=lambda x: x[0], reverse=True)[:3]
+        for value, desc in worst:
+            click.echo(f"  - worst angle deviation for first 3 atoms: |delta|={value:.3f} deg :: {desc}")
+
 @click.command()
 @click.argument("data", type=click.Path(exists=True))
 @click.option("--out_suffix", type=str, help="Output suffix", default="CryoNet.Refine")
@@ -324,14 +394,36 @@ def build_lightweight_global_batch(case) -> dict:
 @click.option("--rotamer", type=float, help="Weight for rotamer loss", default=500.0)
 @click.option("--bond", type=float, help="Weight for bond loss", default=50)
 @click.option("--angle", type=float, help="Weight for angle loss", default=0.25)
+@click.option("--restraints_file", type=click.Path(exists=True), help="User bond/angle restraints file (.json/.yaml)", default=None)
+@click.option("--use_user_restraints/--no-use_user_restraints", is_flag=True, help="Enable explicit user bond/angle restraints", default=False)
+@click.option("--user_bond", type=float, help="Weight for user bond restraint loss", default=1.0)
+@click.option("--user_angle", type=float, help="Weight for user angle restraint loss", default=1.0)
 @click.option("--cbeta", type=float, help="Weight for cbeta loss", default=50.0)
 @click.option("--ramaz", type=float, help="Weight for ramaz loss", default=0.1)
-@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-3)
+@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 @click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
 @click.option("--validate_output", is_flag=True, help="Validate output flag", default=False)
 @click.option("--ignore_origin", is_flag=True, help="Ignore density origin flag", default=False)
+@click.option(
+    "--auto_metal_restraints/--no-auto_metal_restraints",
+    is_flag=True,
+    help="Detect default metal coordination bond restraints during preprocessing",
+    default=True,
+)
+@click.option(
+    "--metal_restraint_distance_strategy",
+    type=click.Choice(["input", "library"]),
+    help="Ideal-distance strategy for default metal bond restraints",
+    default="library",
+)
+@click.option(
+    "--metal_coordination_cutoff",
+    type=float,
+    help="Distance cutoff for automatic metal coordination detection",
+    default=3.0,
+)
 def refine(
     data: str,
     out_dir: str,
@@ -352,6 +444,10 @@ def refine(
     rotamer: int = 500.0,
     bond: int = 50,
     angle: int = 0.25,
+    restraints_file: Optional[str] = None,
+    use_user_restraints: bool = True,
+    user_bond: float = 1.0,
+    user_angle: float = 1.0,
     cbeta: int = 1.0,
     ramaz: int = 0.1,
     learning_rate: float = 1.8e-4,
@@ -360,6 +456,9 @@ def refine(
     use_global_clash: bool = True,
     validate_output: bool = False,
     ignore_origin: bool = False,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -384,11 +483,15 @@ def refine(
         out_dir=out_dir,
         mol_dir=mol_dir,
         preprocessing_threads=1,
+        auto_metal_restraints=auto_metal_restraints,
+        metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+        metal_coordination_cutoff=metal_coordination_cutoff,
     )
     # Load manifest
     manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")
     processed = BoltzProcessedInput(
         manifest=manifest,
+        constraints_dir=processed_dir / "constraints" if (processed_dir / "constraints").exists() else None,
         template_dir=processed_dir / "templates" if (processed_dir / "templates").exists() else None,
         extra_mols_dir=processed_dir / "mols" if (processed_dir / "mols").exists() else None,
     )
@@ -438,10 +541,22 @@ def refine(
     refine_args.weight_dict["rotamer"] = rotamer
     refine_args.weight_dict["bond"] = bond
     refine_args.weight_dict["angle"] = angle
+    refine_args.weight_dict["user_bond"] = user_bond
+    refine_args.weight_dict["user_angle"] = user_angle
     refine_args.weight_dict["cbeta"] = cbeta
     refine_args.weight_dict["ramaz"] = ramaz
     refine_args.learning_rate = learning_rate
     refine_args.use_global_clash = use_global_clash
+    refine_args.restraints_file = restraints_file
+    refine_args.use_user_restraints = use_user_restraints or restraints_file is not None
+    refine_args.auto_metal_restraints = auto_metal_restraints
+    refine_args.metal_restraint_distance_strategy = metal_restraint_distance_strategy
+    refine_args.metal_coordination_cutoff = metal_coordination_cutoff
+    user_restraints_spec = None
+    if refine_args.use_user_restraints:
+        if restraints_file is None:
+            raise click.UsageError("--use_user_restraints requires --restraints_file.")
+        user_restraints_spec = load_user_restraints(restraints_file)
     # pdb_id = data[0].name.split('.')[0]
     input_name = data[0].name
     if input_name.endswith(".cif"):
@@ -474,6 +589,22 @@ def refine(
             template_dir=processed.template_dir,
             extra_mols_dir=processed.extra_mols_dir,
         )
+        default_restraints_spec = None
+        if processed.constraints_dir is not None:
+            default_restraints_path = processed.constraints_dir / f"{record.id}.json"
+            if default_restraints_path.exists():
+                default_restraints_spec = load_user_restraints(default_restraints_path)
+        combined_restraints_spec = merge_user_restraints_specs(default_restraints_spec, user_restraints_spec)
+        if combined_restraints_spec is not None:
+            resolved_user_restraints = resolve_user_restraints(combined_restraints_spec, case.tokenized.structure)
+            refiner.set_user_restraints(resolved_user_restraints)
+            click.echo(
+                f"Loaded default atom restraints for {record.id}: "
+                f"{len(resolved_user_restraints.bonds)} bonds, "
+                f"{len(resolved_user_restraints.angles)} angles"
+            )
+        else:
+            refiner.set_user_restraints(None)
         batch = build_lightweight_global_batch(case)
         crop_plans = refiner.molecule_aware_cropper.plan_crops_from_tokenized(case.tokenized)
         if len(crop_plans) == 0:
@@ -497,6 +628,7 @@ def refine(
         if ignore_origin and offset is not None:
             refined_coords = refined_coords + offset.to(refined_coords.device)
             target_density_obj[0].offset = offset
+        report_restraint_deviation(record.id, refined_coords, refiner.user_restraints)
         
         # Get best results info from refiner
         best_iteration, best_loss, best_cc = (

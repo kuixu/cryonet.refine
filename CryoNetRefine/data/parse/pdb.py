@@ -27,6 +27,9 @@ def parse_pdb(
     moldir: Optional[str] = None,
     use_assembly: bool = True,
     compute_interfaces: bool = True,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> ParsedStructure:
     with NamedTemporaryFile(suffix=".cif") as tmp_cif_file:
         tmp_cif_path = tmp_cif_file.name
@@ -65,5 +68,8 @@ def parse_pdb(
             mols=mols,
             moldir=moldir,
             use_assembly=use_assembly,
-            compute_interfaces=compute_interfaces
+            compute_interfaces=compute_interfaces,
+            auto_metal_restraints=auto_metal_restraints,
+            metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+            metal_coordination_cutoff=metal_coordination_cutoff,
         )

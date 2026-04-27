@@ -1,7 +1,7 @@
 import contextlib
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Any, Optional
 
 import gemmi
 import numpy as np
@@ -12,6 +12,10 @@ from sklearn.neighbors import KDTree
 
 from CryoNetRefine.data import const
 from CryoNetRefine.data.mol import load_molecules
+from CryoNetRefine.data.parse.metal_coordination import (
+    AutoMetalRestraintOptions,
+    build_default_metal_restraints,
+)
 from CryoNetRefine.data.types import (
     AtomV2,
     BondV2,
@@ -90,6 +94,7 @@ class ParsedConnection:
     residue_index_2: int
     atom_index_1: str
     atom_index_2: str
+    connection_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,7 @@ class ParsedStructure:
     data: StructureV2
     info: StructureInfo
     sequences: dict[str, str]
+    default_user_restraints: dict[str, Any] | None = None
 
 
 ####################################################################################################
@@ -1015,6 +1021,7 @@ def parse_connection(
         residue_index_2=res_2_idx,
         atom_index_1=atom_index_1,
         atom_index_2=atom_index_2,
+        connection_type=connection.type.name,
     )
 
     return conn
@@ -1026,6 +1033,9 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     moldir: Optional[str] = None,
     use_assembly: bool = True,
     compute_interfaces: bool = True,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> ParsedStructure:
     """Parse a structure in MMCIF format.
 
@@ -1326,12 +1336,12 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         ensemble_chains = [ensemble_chains[idx] for idx in range(len(ensemble_chains))]
         all_ensembles.append(ensemble_chains)
 
-    # Parse covalent connections
-    connections: list[ParsedConnection] = []
+    # Parse covalent and metal coordination connections
+    covalent_connections: list[ParsedConnection] = []
+    metal_connections: list[ParsedConnection] = []
     for connection in structure.connections:
-        # Skip non-covalent connections
         connection: gemmi.Connection
-        if connection.type.name != "Covale":
+        if connection.type.name not in {"Covale", "MetalC"}:
             continue
         try:
             parsed_connection = parse_connection(
@@ -1341,7 +1351,10 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             )
         except Exception:  # noqa: S112, BLE001
             continue
-        connections.append(parsed_connection)
+        if parsed_connection.connection_type == "Covale":
+            covalent_connections.append(parsed_connection)
+        elif parsed_connection.connection_type == "MetalC":
+            metal_connections.append(parsed_connection)
 
     # Create tables
     atom_data = []
@@ -1475,8 +1488,8 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         coords_data_.append(coords_data[e_idx])
     coords_data = [(x,) for xs in coords_data_ for x in xs]
 
-    # Convert connections to tables
-    for conn in connections:
+    # Convert covalent connections to bond tables
+    for conn in covalent_connections:
         chain_1_idx = chain_to_idx[conn.chain_1]
         chain_2_idx = chain_to_idx[conn.chain_2]
         res_1_idx, atom_1_offset = res_to_idx[(conn.chain_1, conn.residue_index_1)]
@@ -1495,6 +1508,17 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             )
         )
 
+    explicit_metal_pairs: list[tuple[int, int]] = []
+    for conn in metal_connections:
+        chain_1_idx = chain_to_idx[conn.chain_1]
+        chain_2_idx = chain_to_idx[conn.chain_2]
+        res_1_idx, atom_1_offset = res_to_idx[(conn.chain_1, conn.residue_index_1)]
+        res_2_idx, atom_2_offset = res_to_idx[(conn.chain_2, conn.residue_index_2)]
+        atom_1_idx = atom_1_offset + conn.atom_index_1
+        atom_2_idx = atom_2_offset + conn.atom_index_2
+
+        explicit_metal_pairs.append((atom_1_idx, atom_2_idx))
+
     # Convert into datatypes
     atoms = np.array(atom_data, dtype=AtomV2)
     bonds = np.array(bond_data, dtype=BondV2)
@@ -1509,7 +1533,6 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         interfaces = compute_interfaces(atoms, chains)
     else:
         interfaces = np.array([], dtype=Interface)
-
     # Return parsed structure
     info = StructureInfo(
         deposited=deposit_date,
@@ -1532,8 +1555,18 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         ensemble=ensemble,
         coords=coords,
     )
+    default_user_restraints = build_default_metal_restraints(
+        structure=data,
+        explicit_pairs=explicit_metal_pairs,
+        options=AutoMetalRestraintOptions(
+            enabled=auto_metal_restraints,
+            ideal_distance_strategy=metal_restraint_distance_strategy,
+            coordination_cutoff=metal_coordination_cutoff,
+        ),
+    )
     return ParsedStructure(
         data=data,
         info=info,
         sequences=chain_to_seq,
+        default_user_restraints=default_user_restraints,
     )

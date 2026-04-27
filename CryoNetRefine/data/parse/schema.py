@@ -252,6 +252,9 @@ def parse_refine_schema(
     cif_path: Path,
     ccd: Mapping[str, Mol],
     mol_dir: Optional[Path] = None,
+    auto_metal_restraints: bool = True,
+    metal_restraint_distance_strategy: str = "input",
+    metal_coordination_cutoff: float = 3.0,
 ) -> Target:
     """Parse a cif/pdb file for refinement.
 
@@ -273,6 +276,9 @@ def parse_refine_schema(
             moldir=mol_dir,
             use_assembly=False,
             compute_interfaces=False,
+            auto_metal_restraints=auto_metal_restraints,
+            metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+            metal_coordination_cutoff=metal_coordination_cutoff,
         )
     else:
         parsed = parse_mmcif(
@@ -281,6 +287,9 @@ def parse_refine_schema(
             moldir=mol_dir,
             use_assembly=False,
             compute_interfaces=False,
+            auto_metal_restraints=auto_metal_restraints,
+            metal_restraint_distance_strategy=metal_restraint_distance_strategy,
+            metal_coordination_cutoff=metal_coordination_cutoff,
         )
     # Use the parsed template data directly
     data = parsed.data          # StructureV2
@@ -342,4 +351,5 @@ def parse_refine_schema(
         sequences=sequences,
         templates=templates,
         extra_mols=extra_mols,
+        default_user_restraints=parsed.default_user_restraints,
     )

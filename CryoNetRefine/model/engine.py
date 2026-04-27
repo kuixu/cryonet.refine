@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from CryoNetRefine.data.feature.featurizer import BoltzFeaturizer
 from CryoNetRefine.data.const import atom_weight, atomic_to_symbol
+from CryoNetRefine.data.parse.restraints import ResolvedUserRestraints
 from CryoNetRefine.data.parse.input import RefineArgs
 from CryoNetRefine.data.write.utils import write_refined_structure
 from CryoNetRefine.data.crop.molecule_aware import MoleculeTypeAwareSlidingWindowCropper
@@ -73,6 +74,8 @@ class Engine:
         self.crop_first_seed = 42
         self.crop_feature_cache = {}
         self._use_global_clash_this_run = self.refine_args.use_global_clash
+        self.user_restraints: ResolvedUserRestraints | None = None
+        self.global_atom_lookup: dict[int, str] | None = None
         # Initialize cropper if needed
         if self.enable_cropping:
             if self.refine_args.use_molecule_aware_cropping:
@@ -119,6 +122,10 @@ class Engine:
                 sm.atom_attention_encoder.activation_checkpointing = False
             if hasattr(sm, "atom_attention_decoder"):
                 sm.atom_attention_decoder.activation_checkpointing = False
+
+    def set_user_restraints(self, restraints: ResolvedUserRestraints | None) -> None:
+        self.user_restraints = restraints
+        self.global_atom_lookup = None if restraints is None else restraints.atom_lookup
     def _get_model(self):
         """Get the actual model, handling DDP wrapping."""
         if hasattr(self.model, 'module'):
@@ -715,6 +722,7 @@ class Engine:
             final_global_refined_coords=self.final_global_refined_coords,
             global_feats=self.global_feats,
             use_global_clash=getattr(self, "_use_global_clash_this_run", self.refine_args.use_global_clash),
+            user_restraints=self.user_restraints,
         )
 
         # Debug: Print crop loss info

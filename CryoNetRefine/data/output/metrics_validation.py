@@ -735,7 +735,8 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
         
         # Write back to file
         if is_pdb:
-            structure.write_minimal_pdb(pdb_path)
+            structure.write_pdb(pdb_path)
+            # structure.write_minimal_pdb(pdb_path)
         else:
             tmp_path = pdb_path + ".tmp"
             bak_path = pdb_path + ".bak"
