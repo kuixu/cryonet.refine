@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict,List, Optional, Sequence, Tuple, Union
-from CryoNetRefine.data.utils import update_status
+from CryoNetRefine.data.utils import status_payload, update_status
 import torch
 import gemmi
 
@@ -54,7 +54,7 @@ def _normalize_input_paths(input_path: PathInput) -> List[Path]:
         raise ValueError("input_path is empty")
     return paths
 
-def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
+def sanitize_models(st: gemmi.Structure, path: Path, enable_progress: bool = False) -> gemmi.Structure:
     valid_model = None
     for model in st:
         if len(model) > 0:
@@ -62,7 +62,14 @@ def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
             break
 
     if valid_model is None:
-        update_status(path.parent, {'msg': f"No valid model with chains found.", 'error_code':0, "progress": 10})
+        update_status(
+            path.parent,
+            status_payload(
+                "No valid model with chains found.",
+                progress=10,
+                enable_progress=enable_progress,
+            ),
+        )
         raise ValueError("No valid model with chains found.")
 
     new_st = gemmi.Structure()
@@ -74,13 +81,20 @@ def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
 
     return new_st
 
-def _read_structure_any(path: Path) -> gemmi.Structure:
+def _read_structure_any(path: Path, enable_progress: bool = False) -> gemmi.Structure:
     if path.suffix.lower() == ".pdb":
         st = gemmi.read_structure(str(path))
         st.setup_entities()
         if len(st) > 1:
-            update_status(path.parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
-            st = sanitize_models(st, path)
+            update_status(
+                path.parent,
+                status_payload(
+                    "Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.",
+                    progress=10,
+                    enable_progress=enable_progress,
+                ),
+            )
+            st = sanitize_models(st, path, enable_progress=enable_progress)
 
     # treat as cif/mmcif
     if path.suffix.lower() == ".cif":
@@ -179,6 +193,7 @@ def validate_initial_cc_from_structure_paths(
     cc_threshold: float = 0.0,
     *,
     supported_residue_names: Optional[set[str]] = None,
+    enable_progress: bool = False,
 ) -> Tuple[float, bool, str]:
     """
     Compute global initial CC from the *input structure files* (no batch required).
@@ -197,7 +212,7 @@ def validate_initial_cc_from_structure_paths(
     all_coords = []
     all_weights = []
     for p in input_paths:
-        st = _read_structure_any(p)
+        st = _read_structure_any(p, enable_progress=enable_progress)
         coords_i, weights_i = _extract_atom_coords_and_weights_from_structure(
             st,
             supported_residue_names=supported_residue_names,
@@ -246,6 +261,7 @@ def validate_inputs(
     resolution: Optional[Sequence[float]] = None,
     device: Union[str, torch.device] = "cpu",
     cc_threshold: float = 0.0,
+    enable_progress: bool = False,
 ) -> ValidateReport:
     """
     Perform three types of checks:
@@ -263,7 +279,7 @@ def validate_inputs(
     total_missing = 0
 
     for p in paths:
-        st = _read_structure_any(p)
+        st = _read_structure_any(p, enable_progress=enable_progress)
 
         bad = _find_unsupported_residues(st, supported)
         unsupported_all.update(bad)
@@ -280,7 +296,14 @@ def validate_inputs(
             "Warning: found unsupported residue codes (not standard 20AA / not nucleic bases). "
             f"We will skip these residues if they cannot be parsed: {unsupported_list}"
         )
-        update_status(pdb_dir, {'msg': f"Refining...Warning: Unsupported residues found: {unsupported_list}, and will be skipped.", 'error_code':0, "progress": 10})
+        update_status(
+            pdb_dir,
+            status_payload(
+                f"Refining...Warning: Unsupported residues found: {unsupported_list}, and will be skipped.",
+                progress=10,
+                enable_progress=enable_progress,
+            ),
+        )
     gap_info = GapInfo(has_gap=(total_missing > 0), chain_to_ranges=gap_agg, total_missing=total_missing)
     if gap_info.has_gap:
         messages.append(
@@ -288,7 +311,14 @@ def validate_inputs(
             f"total_missing={gap_info.total_missing}, chains={gap_info.chain_to_ranges}. "
             "Refinement quality may degrade."
         )
-        update_status(pdb_dir, {'msg': f"Refining...Warning: missing residues (gaps) detected in polymer chains. Refinement quality may degrade.", 'error_code':0, "progress": 10})
+        update_status(
+            pdb_dir,
+            status_payload(
+                "Refining...Warning: missing residues (gaps) detected in polymer chains. Refinement quality may degrade.",
+                progress=10,
+                enable_progress=enable_progress,
+            ),
+        )
     cc_val = None
     cc_ok = None
     td_obj: Optional[Sequence[DensityInfo]] = None
@@ -313,10 +343,18 @@ def validate_inputs(
             device=device,
             cc_threshold=cc_threshold,
             supported_residue_names=supported,
+            enable_progress=enable_progress,
         )
         messages.append(cc_msg)
         if not cc_ok:
-            update_status(pdb_dir, {'msg': f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.", 'error_code':0, "progress": 10})
+            update_status(
+                pdb_dir,
+                status_payload(
+                    f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.",
+                    progress=10,
+                    enable_progress=enable_progress,
+                ),
+            )
 
     return ValidateReport(
         unsupported_residues=unsupported_list,

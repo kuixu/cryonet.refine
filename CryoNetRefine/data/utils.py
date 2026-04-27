@@ -19,3 +19,10 @@ def update_status(pdb_dir, jdict):
         jdata = json.load(open(sfile))
         jdata.update(jdict)
         json.dump(jdata, open(sfile, 'w'), indent=4, cls=NpEncoder)
+
+
+def status_payload(msg, error_code=0, progress=None, enable_progress=False):
+    jdict = {'msg': msg, 'error_code': error_code}
+    if enable_progress and progress is not None:
+        jdict['progress'] = progress
+    return jdict

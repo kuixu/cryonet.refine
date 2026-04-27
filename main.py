@@ -406,6 +406,7 @@ def report_restraint_deviation(
 @click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
 @click.option("--validate_output", is_flag=True, help="Validate output flag", default=False)
 @click.option("--ignore_origin", is_flag=True, help="Ignore density origin flag", default=False)
+@click.option("--progress", is_flag=True, help="Write progress values to job status updates", default=False)
 @click.option(
     "--auto_metal_restraints/--no-auto_metal_restraints",
     is_flag=True,
@@ -456,6 +457,7 @@ def refine(
     use_global_clash: bool = True,
     validate_output: bool = False,
     ignore_origin: bool = False,
+    progress: bool = False,
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
@@ -469,7 +471,12 @@ def refine(
     # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
-    validate_inputs(input_path=data,target_density = target_density, resolution = resolution)
+    validate_inputs(
+        input_path=data,
+        target_density=target_density,
+        resolution=resolution,
+        enable_progress=progress,
+    )
     mol_dir = Path(__file__).resolve().parent / "CryoNetRefine" / "data" / "mols"
     mol_dir = ensure_mols_dir(mol_dir)
     # Load processed data !!
@@ -486,6 +493,7 @@ def refine(
         auto_metal_restraints=auto_metal_restraints,
         metal_restraint_distance_strategy=metal_restraint_distance_strategy,
         metal_coordination_cutoff=metal_coordination_cutoff,
+        enable_progress=progress,
     )
     # Load manifest
     manifest = Manifest.load(out_dir / f"processed_{data_stem}" / "manifest.json")

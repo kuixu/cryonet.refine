@@ -149,6 +149,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    enable_progress: bool = False,
 ) -> None:
     try:
         # Parse data
@@ -161,6 +162,7 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 auto_metal_restraints=auto_metal_restraints,
                 metal_restraint_distance_strategy=metal_restraint_distance_strategy,
                 metal_coordination_cutoff=metal_coordination_cutoff,
+                enable_progress=enable_progress,
             )
         elif path.is_dir():
             msg = f"Found directory {path} instead of .fasta or .yaml, skipping."
@@ -213,6 +215,7 @@ def process_inputs(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    enable_progress: bool = False,
 ) -> Manifest:
     """Process the input data and output directory.
     Parameters
@@ -277,6 +280,7 @@ def process_inputs(
         auto_metal_restraints=auto_metal_restraints,
         metal_restraint_distance_strategy=metal_restraint_distance_strategy,
         metal_coordination_cutoff=metal_coordination_cutoff,
+        enable_progress=enable_progress,
     )
 
     # Parse input data
@@ -294,5 +298,4 @@ def process_inputs(
     records = [Record.load(p) for p in records_dir.glob("*.json")]
     manifest = Manifest(records)
     manifest.dump(out_dir / f"processed_{data_stem}" / "manifest.json")
-
 

@@ -255,6 +255,7 @@ def parse_refine_schema(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    enable_progress: bool = False,
 ) -> Target:
     """Parse a cif/pdb file for refinement.
 
@@ -279,6 +280,7 @@ def parse_refine_schema(
             auto_metal_restraints=auto_metal_restraints,
             metal_restraint_distance_strategy=metal_restraint_distance_strategy,
             metal_coordination_cutoff=metal_coordination_cutoff,
+            enable_progress=enable_progress,
         )
     else:
         parsed = parse_mmcif(

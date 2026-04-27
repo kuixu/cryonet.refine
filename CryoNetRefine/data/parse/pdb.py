@@ -3,7 +3,7 @@ from rdkit.Chem.rdchem import Mol
 import gemmi
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from CryoNetRefine.data.utils import update_status
+from CryoNetRefine.data.utils import status_payload, update_status
 from CryoNetRefine.data.parse.mmcif import parse_mmcif, ParsedStructure
 
 def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
@@ -30,6 +30,7 @@ def parse_pdb(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    enable_progress: bool = False,
 ) -> ParsedStructure:
     with NamedTemporaryFile(suffix=".cif") as tmp_cif_file:
         tmp_cif_path = tmp_cif_file.name
@@ -37,7 +38,14 @@ def parse_pdb(
         structure.setup_entities()
 
         if len(structure) > 1:
-            update_status(Path(path).parent, {'msg': f"Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.", 'error_code':0, "progress": 10})
+            update_status(
+                Path(path).parent,
+                status_payload(
+                    "Refining...Warning: Multi-model PDB (with MODEL-ENDMDL) detected, only the first valid model will be refined. We suggest you to combine all models into a single model.",
+                    progress=10,
+                    enable_progress=enable_progress,
+                ),
+            )
             structure = sanitize_models(structure, Path(path))
         subchain_counts: dict[str, int] = {}
         subchain_renaming: dict[str, str] = {}
