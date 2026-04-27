@@ -36,7 +36,7 @@ date >$log;
 
 max_tokens=1000
 restraint_flags=()
-if [ -n "$restraints_file" ]; then
+if [ -f "$restraints_file" ]; then
     restraint_flags+=(--use_user_restraints --restraints_file "$restraints_file")
 fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
