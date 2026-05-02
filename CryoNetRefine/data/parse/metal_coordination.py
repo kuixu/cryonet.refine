@@ -340,8 +340,8 @@ def _build_atom_infos(structure: StructureV2) -> list[_AtomInfo]:
 def _build_bond_graph(structure: StructureV2) -> dict[int, set[int]]:
     adjacency: dict[int, set[int]] = {}
     for bond in structure.bonds:
-        atom_idx1 = int(bond["atom_idx_1"])
-        atom_idx2 = int(bond["atom_idx_2"])
+        atom_idx1 = int(bond["atom_1"])
+        atom_idx2 = int(bond["atom_2"])
         adjacency.setdefault(atom_idx1, set()).add(atom_idx2)
         adjacency.setdefault(atom_idx2, set()).add(atom_idx1)
     return adjacency

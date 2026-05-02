@@ -617,8 +617,8 @@ def to_mmcif(
         )
 
     for bond in getattr(structure, "bonds", []):
-        atom_idx1 = int(bond["atom_idx_1"])
-        atom_idx2 = int(bond["atom_idx_2"])
+        atom_idx1 = int(bond["atom_1"])
+        atom_idx2 = int(bond["atom_2"])
         m1 = atom_meta_by_idx.get(atom_idx1)
         m2 = atom_meta_by_idx.get(atom_idx2)
         if m1 is None or m2 is None:

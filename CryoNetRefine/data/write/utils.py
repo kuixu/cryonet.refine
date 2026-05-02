@@ -288,7 +288,6 @@ def write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, outpu
             raise ValueError(
                 "Molecule-aware crop produced no residues/atoms for this structure."
             )
-
         # Concatenate atoms & residues
         crop_atoms = np.concatenate(crop_atoms_list).astype(
             structure.atoms.dtype, copy=False
@@ -575,17 +574,21 @@ def write_refined_structure_cif_by_crop(predicted_coords, feats, data_dir, outpu
         crop_residues = np.array(crop_residues_list, dtype=Residue)
         crop_chains = np.array(crop_chains_list, dtype=Chain)
 
-        # Sanity check: predicted coords length must match number of atoms
-        if coord_unpad.shape[0] != crop_atoms.shape[0]:
+        # Full residue templates include all CCD atom slots; only a subset are
+        # present / predicted. Model outputs one coord per present atom in
+        # template order — same order as is_present=True rows in crop_atoms.
+        crop_atoms = crop_atoms.copy()
+        present = crop_atoms["is_present"]
+        n_present = int(present.sum())
+        if coord_unpad.shape[0] != n_present:
             raise ValueError(
                 f"[molecule_aware] Predicted atom count ({coord_unpad.shape[0]}) "
-                f"does not match selected atoms ({crop_atoms.shape[0]})."
+                f"does not match present atoms in crop ({n_present}; "
+                f"total template slots {crop_atoms.shape[0]})."
             )
-
-        # Set coords and presence flags
-        crop_atoms["coords"] = coord_unpad
-        # crop_atoms["is_present"] = True
-        crop_coords = np.array([(x,) for x in coord_unpad], dtype=Coords)
+        crop_atoms["coords"] = crop_atoms["coords"].copy()
+        crop_atoms["coords"][present] = coord_unpad
+        crop_coords = np.array([(x,) for x in crop_atoms["coords"]], dtype=Coords)
         crop_residues["is_present"] = True
 
         # No bonds / ensemble needed for geometry RMSD; mmtbx will infer topology
