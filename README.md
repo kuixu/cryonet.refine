@@ -130,15 +130,14 @@ Refinement completed in 2158.01 seconds
 CryoNet.Refine refinement completed!
 ```
 
+For the provided demo (EMD-0775, 3.6 Å, AlphaFold 3 + matchmaker initial model, 1896 residues), the end-to-end refinement takes approximately **35–36 minutes (~2160 seconds)** on a single NVIDIA GPU (NVIDIA H20). Peak GPU memory usage is **~14 GB**.
 
+Tested reference hardware:
 
-For the provided demo (EMD-0775, 3.6 Å, AlphaFold 3 + matchmaker initial model, 1896 residues), the end-to-end refinement takes approximately **35–36 minutes (~2160 seconds)** on a single NVIDIA GPU. Peak GPU memory usage is **~13 GB**, so the demo fits comfortably on a consumer-grade desktop GPU with ≥16 GB VRAM (e.g., NVIDIA RTX 4080/4090, A4000, or similar).
-
-Reference hardware used for the timing reported above:
-
-- **GPU**: 1 × NVIDIA H20 (96 GB VRAM, driver 570.172.08, CUDA 12.8)
-- **Observed runtime usage**: ~14 GB VRAM, ~32% GPU utilization
-- **Wall-clock time**: 2158.01 s (~35 min 37 s) for the demo input
+| GPU | VRAM | Driver / CUDA | Observed VRAM usage | GPU util. | Wall-clock time |
+|---|---|---|---|---|---|
+| NVIDIA H20 | 96 GB | 570.172.08 / CUDA 12.8 | ~14 GB | ~32% | **2158.01 s (~35 min 37 s)** |
+| NVIDIA GeForce RTX 4090 D | 24 GB | 570.124.06 / CUDA 12.8 | ~14 GB | ~11% | **1952.34 s (~32 min 32 s)** |
 
 
 ### Validation Configuration in `run.sh`
