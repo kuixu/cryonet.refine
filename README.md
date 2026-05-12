@@ -111,6 +111,36 @@ The script will run the full refinement pipeline and save refined atomic model i
 > ⚠️ **Large density map origin (`--ignore_origin`)**  
 > A very large map origin can hurt refinement. With `--ignore_origin`, the density and atomic coordinates are shifted together so they are aligned near the origin(0,0,0) during refinement, which removes that offset effect. Uncomment `--ignore_origin` in `run.sh` when needed.
 
+### Expected Output
+
+After a successful run on the demo (`./examples/0775_af3.cif` + `./examples/emd_0775.map` at 3.6 Å), the refined atomic model is written to the specified output directory:
+
+```
+output/
+└── 0775_af3_CryoNet.Refine.cif    # Refined atomic model (~1.2 MB)
+```
+
+A typical end-of-run log looks like:
+
+```
+Refined structure 0 saved to output/0775_af3_CryoNet.Refine.cif
+Refinement completed!
+Refining structures: 100%|██████████| 1/1 [35:37<00:00, 2137.63s/it]
+Refinement completed in 2158.01 seconds
+CryoNet.Refine refinement completed!
+```
+
+
+
+For the provided demo (EMD-0775, 3.6 Å, AlphaFold 3 + matchmaker initial model, 1896 residues), the end-to-end refinement takes approximately **35–36 minutes (~2160 seconds)** on a single NVIDIA GPU. Peak GPU memory usage is **~13 GB**, so the demo fits comfortably on a consumer-grade desktop GPU with ≥16 GB VRAM (e.g., NVIDIA RTX 4080/4090, A4000, or similar).
+
+Reference hardware used for the timing reported above:
+
+- **GPU**: 1 × NVIDIA H20 (96 GB VRAM, driver 570.172.08, CUDA 12.8)
+- **Observed runtime usage**: ~14 GB VRAM, ~32% GPU utilization
+- **Wall-clock time**: 2158.01 s (~35 min 37 s) for the demo input
+
+
 ### Validation Configuration in `run.sh`
 
 - `run.sh` currently defines:
