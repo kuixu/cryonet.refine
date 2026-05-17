@@ -761,17 +761,16 @@ def parse_polymer(  # noqa: C901, PLR0915, PLR0912
             if modified_mol is None:
                 # Skip residue if mol not found
                 continue
-                residue = parse_ccd_residue(
-                    name=res_name,
-                    ref_mol=modified_mol,
-                    res_idx=j,
-                    gemmi_mol=res,
-                    is_covalent=True,
-                )
+            residue = parse_ccd_residue(
+                name=res_name,
+                ref_mol=modified_mol,
+                res_idx=j,
+                gemmi_mol=res,
+                is_covalent=True,
+            )
+            if residue is not None:
                 parsed.append(residue)
-                continue
-            else:  # noqa: RET507
-                res_name = "UNK"
+            continue
 
         # Load regular residues
         ref_mol = get_mol(res_name, mols, moldir)
