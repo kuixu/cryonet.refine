@@ -282,12 +282,13 @@ class Engine:
                 crop_batch["crop_idx"] = int(crop_idx_info)
                 crop_batch["crop_size"] = int(len(global_token_indices))
                 crop_batch["crop_start"] = int(global_token_indices.min()) if len(global_token_indices) else 0
+                crop_batch["global_atom_indices"] = torch.from_numpy(
+                    np.asarray(global_atom_indices, dtype=np.int64)
+                ).long()
 
                 n_global_atoms = int(batch["atom_pad_mask"].shape[1])
                 crop_atom_mask = torch.zeros(n_global_atoms, dtype=torch.bool)
-                global_atom_indices_t = torch.from_numpy(
-                    np.asarray(global_atom_indices, dtype=np.int64)
-                ).long()
+                global_atom_indices_t = crop_batch["global_atom_indices"]
                 crop_atom_mask[global_atom_indices_t] = True
                 crop_token_indices = global_token_indices
             else:

@@ -300,7 +300,12 @@ def _infer_element(atom_name: str, residue_name: str | None = None) -> str:
     if residue_text in CCTBX_METAL_ELEMENTS and atom_text.startswith(residue_text):
         return residue_text
     if len(atom_text) >= 2 and atom_text[:2] in CCTBX_METAL_ELEMENTS:
-        if residue_text in CCTBX_METAL_ELEMENTS or residue_text in SF_CLUSTERS or residue_text.startswith(atom_text[:2]):
+        # Do not infer two-letter metals from arbitrary ligand atom names:
+        # NAD atom names such as N1A/N3A/N6A collapse to "NA" after stripping
+        # digits and must remain nitrogen, not sodium. Multi-letter metal
+        # inference is only safe for actual metal residues or supported metal
+        # clusters.
+        if residue_text in CCTBX_METAL_ELEMENTS or residue_text in SF_CLUSTERS:
             return atom_text[:2]
     if not atom_text:
         return residue_text[:1]

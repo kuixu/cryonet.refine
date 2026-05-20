@@ -73,6 +73,7 @@ def parse_pdb(
 
         return parse_mmcif(
             path=tmp_cif_path,
+            status_dir= Path(path).parent,
             mols=mols,
             moldir=moldir,
             use_assembly=use_assembly,

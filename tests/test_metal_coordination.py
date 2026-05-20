@@ -168,6 +168,28 @@ def _make_protein_link_budget_structure() -> StructureV2:
     )
 
 
+def _make_nad_name_collision_structure() -> StructureV2:
+    return _build_structure(
+        residue_specs=[
+            {
+                "name": "NAD",
+                "chain": "A",
+                "auth_seq_id": "481",
+                "auth_comp_id": "NAD",
+                "is_standard": False,
+                "atoms": [("N1A", (0.0, 0.0, 0.0))],
+            },
+            {
+                "name": "VAL",
+                "chain": "B",
+                "auth_seq_id": "243",
+                "atoms": [("N", (2.9, 0.0, 0.0)), ("O", (0.0, 3.0, 0.0))],
+            },
+        ],
+        chain_types={"A": int(const.chain_type_ids["NONPOLYMER"]), "B": int(const.chain_type_ids["PROTEIN"])},
+    )
+
+
 def _make_zn_mcl_structure() -> StructureV2:
     return _build_structure(
         residue_specs=[
@@ -276,6 +298,20 @@ def test_generic_library_limits_protein_links_per_metal():
     assert selected == {"OD1", "OE1"}
 
 
+def test_nad_atom_names_are_not_inferred_as_sodium():
+    structure = _make_nad_name_collision_structure()
+    restraints = build_default_metal_restraints(
+        structure,
+        explicit_pairs=None,
+        options=AutoMetalRestraintOptions(
+            enabled=True,
+            ideal_distance_strategy="library",
+            coordination_cutoff=3.0,
+        ),
+    )
+    assert restraints == {"bonds": [], "angles": []}
+
+
 def test_mcl_zn_tetrahedral_adds_bonds_and_angles():
     structure = _make_zn_mcl_structure()
     restraints = build_default_metal_restraints(
@@ -340,6 +376,7 @@ def _run_as_script() -> None:
     test_auto_metal_restraints_library_strategy_uses_cctbx_like_defaults()
     test_generic_library_uses_non_protein_fallback_for_rna_oxygen()
     test_generic_library_limits_protein_links_per_metal()
+    test_nad_atom_names_are_not_inferred_as_sodium()
     test_mcl_zn_tetrahedral_adds_bonds_and_angles()
     test_mcl_fes_cluster_adds_bonds_and_angles()
     test_explicit_pairs_are_kept_when_auto_detection_disabled()

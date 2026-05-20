@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from CryoNetRefine.data import const
 from CryoNetRefine.data.parse.restraints import ResolvedUserRestraints
-from CryoNetRefine.data.write.utils import write_refined_structure_cif, write_refined_structure_cif_by_crop, write_refined_structure_pdb, write_refined_structure_pdb_by_crop
+from CryoNetRefine.data.write.utils import write_refined_structure_cif, write_refined_structure_cif_by_crop
 from CryoNetRefine.libs.density.density import DensityInfo, mol_atom_density
 from CryoNetRefine.loss.geometric import GeometricAdapter, GeometricMetricWrapper
 from CryoNetRefine.loss.user_restraints import compute_user_restraint_losses

@@ -1,21 +1,22 @@
 import contextlib
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import Any, Optional
-
+from pathlib import Path
 import gemmi
 import numpy as np
 from rdkit import rdBase
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdchem import Mol
 from sklearn.neighbors import KDTree
-
 from CryoNetRefine.data import const
 from CryoNetRefine.data.mol import load_molecules
 from CryoNetRefine.data.parse.metal_coordination import (
     AutoMetalRestraintOptions,
     build_default_metal_restraints,
 )
+from CryoNetRefine.data.utils import status_payload, update_status
 from CryoNetRefine.data.types import (
     AtomV2,
     BondV2,
@@ -551,6 +552,7 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
     # If multi-atom, start by getting the PDB coordinates
     pdb_pos = {}
     bfactor = {}
+    pdb_heavy_atom_names = set()
     if is_present:
         # Match atoms based on names
         for atom in gemmi_mol:
@@ -558,14 +560,19 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
             pos = (atom.pos.x, atom.pos.y, atom.pos.z)
             pdb_pos[atom.name] = pos
             bfactor[atom.name] = atom.b_iso
+            element_name = atom.element.name.upper()
+            if element_name not in {"H", "D", "T"}:
+                pdb_heavy_atom_names.add(atom.name)
     # Parse each atom in order of the reference mol
     atoms = []
     atom_idx = 0
     idx_map = {}  # Used for bonds later
+    ref_atom_names = set()
 
     for i, atom in enumerate(ref_mol.GetAtoms()):
         # Get atom name, charge, element and reference coordinates
         atom_name = atom.GetProp("name")
+        ref_atom_names.add(atom_name)
 
         # If the atom is a leaving atom, skip if not in the PDB and is_covalent
         if (
@@ -596,6 +603,35 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
         idx_map[i] = atom_idx
         atom_idx += 1
 
+    unmatched_pdb_atoms = sorted(pdb_heavy_atom_names - ref_atom_names)
+    if unmatched_pdb_atoms:
+        # missing_ref_atoms = sorted(ref_atom_names - set(pdb_pos))
+
+        ccd_url = f"https://www.rcsb.org/ligand/{name}"
+        ccd_cif_url = f"https://files.rcsb.org/ligands/view/{name}.cif"
+
+        expected_atoms = ", ".join(sorted(ref_atom_names))
+        unmatched_atoms = ", ".join(unmatched_pdb_atoms)
+
+        update_status(
+            STATUS_DIR,
+            status_payload(
+            "Ligand atom-name mismatch while parsing "
+            f"{name} auth_seq_id={auth_seq_id}: "
+            f"{len(unmatched_pdb_atoms)} input heavy atoms do not match "
+            f"the CCD/reference atom names ({unmatched_atoms}). "
+            f"Expected CCD heavy atoms: ({expected_atoms}). "
+            "This usually indicates that the input ligand definition differs "
+            "from the wwPDB Chemical Component Dictionary (CCD) reference "
+            "(e.g. renamed atoms or a non-standard/custom ligand export ...). "
+            "This ligand instance will be skipped during refinement and "
+            "geometry processing. "
+            f"Please compare your ligand against the CCD definition: {ccd_url} "
+            f"(CCD CIF: {ccd_cif_url})",
+            progress=15,
+            enable_progress=False,),
+        )
+        return None
     # Load bonds
     bonds = []
     unk_bond = const.bond_type_ids[const.unk_bond_type]
@@ -1025,9 +1061,11 @@ def parse_connection(
 
     return conn
 
+STATUS_DIR = None
 
 def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     path: str,
+    status_dir: Optional[Path] = None,
     mols: Optional[dict[str, Mol]] = None,
     moldir: Optional[str] = None,
     use_assembly: bool = True,
@@ -1053,7 +1091,11 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     """
     # Disable rdkit warnings
     blocker = rdBase.BlockLogs()  # noqa: F841
-
+    global STATUS_DIR
+    if status_dir is not None:
+        STATUS_DIR = status_dir
+    else:
+        STATUS_DIR = Path(path).parent
     # set mols
     mols = {} if mols is None else mols
 
@@ -1231,7 +1273,9 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                     gemmi_mol=ligand,
                     is_covalent=is_covalent,
                 )
-                residues.append(residue)
+                if residue is not None:
+                    residues.append(residue)
+                continue
 
             if residues:
                 chains.append(
@@ -1319,7 +1363,9 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                         gemmi_mol=ligand,
                         is_covalent=is_covalent,
                     )
-                    residues.append(residue)
+                    if residue is not None:
+                        residues.append(residue)
+                    continue
 
                 if residues:
                     parsed_non_polymer = ParsedChain(

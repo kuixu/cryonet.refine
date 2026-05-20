@@ -207,6 +207,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
                     "is_complete": (start == 0 and end == num_tokens),
                     "num_tokens": len(crop_token_indices),
                     "num_atoms": int(global_atom_indices.numel()),
+                    "global_atom_indices": global_atom_indices.cpu().tolist(),
                     "sequences": crop_sequences,
                     "local_start": start,
                     "local_end": end,
@@ -502,5 +503,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
         crop_batch['crop_metadata'] = crop_metadata
         crop_batch['crop_idx'] = crop_idx
         crop_batch['crop_type'] = 'molecule_aware'
+        if isinstance(crop_atom_mask, torch.Tensor):
+            crop_batch['global_atom_indices'] = crop_atom_mask.nonzero(as_tuple=False).flatten().long()
         
         return crop_batch, crop_token_indices, crop_atom_mask
