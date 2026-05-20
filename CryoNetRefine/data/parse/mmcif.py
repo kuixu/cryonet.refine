@@ -1084,7 +1084,6 @@ def _emit_unmatched_ccd_ligand_summary(status_dir: Path) -> None:
             f"{', '.join(codes)}. "
             "These instances will be omitted from refinement and geometry processing. "
             "CCD references: " + "; ".join(ccd_links) )
-    breakpoint()
     update_status(
         status_dir,
         status_payload(
