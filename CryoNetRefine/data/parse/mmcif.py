@@ -1,5 +1,4 @@
 import contextlib
-import warnings
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from typing import Any, Optional
@@ -616,7 +615,7 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
         update_status(
             STATUS_DIR,
             status_payload(
-            "Ligand atom-name mismatch while parsing "
+            "Refining...Warning: Ligand atom-name mismatch while parsing "
             f"{name} auth_seq_id={auth_seq_id}: "
             f"{len(unmatched_pdb_atoms)} input heavy atoms do not match "
             f"the CCD/reference atom names ({unmatched_atoms}). "
@@ -631,6 +630,7 @@ def parse_ccd_residue(  # noqa: PLR0915, C901
             progress=15,
             enable_progress=False,),
         )
+        _record_unmatched_ccd_ligand(name)
         return None
     # Load bonds
     bonds = []
@@ -1062,6 +1062,38 @@ def parse_connection(
     return conn
 
 STATUS_DIR = None
+UNMATCHED_CCD_LIGANDS: set[str] = set()
+
+
+def _record_unmatched_ccd_ligand(name: str) -> None:
+    UNMATCHED_CCD_LIGANDS.add(name.upper())
+
+
+def _emit_unmatched_ccd_ligand_summary(status_dir: Path) -> None:
+    if not UNMATCHED_CCD_LIGANDS:
+        return
+
+    codes = sorted(UNMATCHED_CCD_LIGANDS)
+    ccd_links = [
+        f"{code}: https://www.rcsb.org/ligand/{code} "
+        f"(CIF: https://files.rcsb.org/ligands/view/{code}.cif)"
+        for code in codes
+    ]
+    message =( "Refining...Warning: "
+            f"{len(codes)} ligand(s) skipped due to atom-name mismatch with CCD: "
+            f"{', '.join(codes)}. "
+            "These instances will be omitted from refinement and geometry processing. "
+            "CCD references: " + "; ".join(ccd_links) )
+    breakpoint()
+    update_status(
+        status_dir,
+        status_payload(
+            message,
+            progress=15,
+            enable_progress=False,
+        ),
+    )
+
 
 def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     path: str,
@@ -1096,6 +1128,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         STATUS_DIR = status_dir
     else:
         STATUS_DIR = Path(path).parent
+    UNMATCHED_CCD_LIGANDS.clear()
     # set mols
     mols = {} if mols is None else mols
 
@@ -1609,6 +1642,8 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
             coordination_cutoff=metal_coordination_cutoff,
         ),
     )
+    _emit_unmatched_ccd_ligand_summary(STATUS_DIR)
+    UNMATCHED_CCD_LIGANDS.clear()
     return ParsedStructure(
         data=data,
         info=info,
