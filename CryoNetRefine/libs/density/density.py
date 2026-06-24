@@ -112,6 +112,8 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tens
     if N == 0:
         raise RuntimeError(f"Warning: No atoms in mol_atom_density_th for {atom_coords.shape}")
     L = 2 * gsphere  # Number of grid points per axis in the Gaussian cube
+    atom_chunk = int(os.environ.get("CRYONET_REFINE_DENSITY_ATOM_CHUNK", "512"))
+    atom_chunk = max(1, atom_chunk)
     
     # Calculate fractional offsets for each atom's position
     # x_offsets = coords_den[:, 0] - coords_den[:, 0].int().float()
@@ -126,55 +128,53 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tens
     # Modified: calculate p0_all using rounded integer parts
     p0_all = (rounded_coords_den -gsphere ).int() - box0
     # breakpoint()
-    # Generate Gaussian distributions for each axis
+    # Generate Gaussian distributions for each axis in atom chunks. Building
+    # (N, L, L, L) for large crops can exceed A100 80GB; chunking keeps the
+    # same differentiable scatter-add while capping peak memory.
     ra = torch.arange(-gsphere, gsphere, device=device).float()  # (L,)
-    ra_expanded = ra.unsqueeze(0).expand(N, -1)  # (N, L)
-    
-    ii = torch.exp(-torch.pow(ra_expanded - x_offsets.unsqueeze(1), 2))  # (N, L)
-    jj = torch.exp(-torch.pow(ra_expanded - y_offsets.unsqueeze(1), 2))  # (N, L)
-    kk = torch.exp(-torch.pow(ra_expanded - z_offsets.unsqueeze(1), 2))  # (N, L)
-    
-    # Compute 3D Gaussian cubes for all atoms
-    atom_cubes = torch.einsum('ni,nj,nk->nijk', ii, jj, kk)  # (N, L, L, L)
-    atom_cubes *= atom_weight.view(-1, 1, 1, 1)  # Apply atom weights
-    
-    # Calculate global coordinates for each cube's grid points
-    # p0_all = (coords_den - gsphere).int() - box0  # (N, 3)
     offsets = torch.stack(torch.meshgrid(
         torch.arange(L, device=device),
         torch.arange(L, device=device),
         torch.arange(L, device=device),
     indexing='ij')).to(device)  # (3, L, L, L)
-    
-    # Expand dimensions for broadcasting
-    p0_all_expanded = p0_all.view(N, 3, 1, 1, 1)  # (N, 3, 1, 1, 1)
-    offsets_expanded = offsets.unsqueeze(0)  # (1, 3, L, L, L)
-    global_coords = p0_all_expanded + offsets_expanded  # (N, 3, L, L, L)
-    
-    # Create validity mask for coordinates
     boxsize_tensor = torch.tensor([boxsize[0], boxsize[1], boxsize[2]], device=device)
-    # Use strict less-than to prevent floating point equality errors
-    valid_x = (global_coords[:, 0] >= 0) & (global_coords[:, 0] < boxsize_tensor[0].float() - 1e-6)
-    valid_y = (global_coords[:, 1] >= 0) & (global_coords[:, 1] < boxsize_tensor[1].float() - 1e-6)
-    valid_z = (global_coords[:, 2] >= 0) & (global_coords[:, 2] < boxsize_tensor[2].float() - 1e-6)
+    any_valid = False
+    for start in range(0, N, atom_chunk):
+        end = min(start + atom_chunk, N)
+        p0_chunk = p0_all[start:end]
+        w_chunk = atom_weight[start:end]
+        x_chunk = x_offsets[start:end]
+        y_chunk = y_offsets[start:end]
+        z_chunk = z_offsets[start:end]
+        C = end - start
+        ra_expanded = ra.unsqueeze(0).expand(C, -1)
 
-    valid_mask = valid_x & valid_y & valid_z  # (N, L, L, L)
-    # Apply mask to atom cubes
-    atom_cubes *= valid_mask.float()  # Zero out invalid positions
-    
-    # Flatten indices and values for scatter addition
-    x_indices = global_coords[:, 0, ...].reshape(-1).long()
-    y_indices = global_coords[:, 1, ...].reshape(-1).long()
-    z_indices = global_coords[:, 2, ...].reshape(-1).long()
-    values = atom_cubes.reshape(-1)
-    if x_indices.numel() == 0:
-        raise RuntimeError(f"Warning: All atoms filtered out in mol_atom_density_th (N={N}, valid_mask.sum()={valid_mask.sum()})")
-        return density, box0
-    assert x_indices.max() < boxsize[0], f"X index overflow: {x_indices.max()} vs {boxsize[0]}"
-    assert y_indices.max() < boxsize[1], f"Y index overflow: {y_indices.max()} vs {boxsize[1]}"
-    assert z_indices.max() < boxsize[2], f"Z index overflow: {z_indices.max()} vs {boxsize[2]}"
-    # Accumulate values into density tensor
-    density.index_put_((x_indices, y_indices, z_indices), values, accumulate=True)
+        ii = torch.exp(-torch.pow(ra_expanded - x_chunk.unsqueeze(1), 2))
+        jj = torch.exp(-torch.pow(ra_expanded - y_chunk.unsqueeze(1), 2))
+        kk = torch.exp(-torch.pow(ra_expanded - z_chunk.unsqueeze(1), 2))
+        atom_cubes = torch.einsum('ni,nj,nk->nijk', ii, jj, kk)
+        atom_cubes *= w_chunk.view(-1, 1, 1, 1)
+
+        global_coords = p0_chunk.view(C, 3, 1, 1, 1) + offsets.unsqueeze(0)
+        valid_x = (global_coords[:, 0] >= 0) & (global_coords[:, 0] < boxsize_tensor[0].float() - 1e-6)
+        valid_y = (global_coords[:, 1] >= 0) & (global_coords[:, 1] < boxsize_tensor[1].float() - 1e-6)
+        valid_z = (global_coords[:, 2] >= 0) & (global_coords[:, 2] < boxsize_tensor[2].float() - 1e-6)
+        valid_mask = valid_x & valid_y & valid_z
+        if not torch.any(valid_mask):
+            continue
+        any_valid = True
+        atom_cubes = atom_cubes * valid_mask.float()
+
+        x_indices = global_coords[:, 0, ...].reshape(-1).long()
+        y_indices = global_coords[:, 1, ...].reshape(-1).long()
+        z_indices = global_coords[:, 2, ...].reshape(-1).long()
+        values = atom_cubes.reshape(-1)
+        assert x_indices.max() < boxsize[0], f"X index overflow: {x_indices.max()} vs {boxsize[0]}"
+        assert y_indices.max() < boxsize[1], f"Y index overflow: {y_indices.max()} vs {boxsize[1]}"
+        assert z_indices.max() < boxsize[2], f"Z index overflow: {z_indices.max()} vs {boxsize[2]}"
+        density.index_put_((x_indices, y_indices, z_indices), values, accumulate=True)
+    if not any_valid:
+        raise RuntimeError(f"Warning: All atoms filtered out in mol_atom_density_th (N={N})")
     return density, box0
 
 def mol_atom_density(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tensor=torch.tensor([1.0, 1.0, 1.0]), datatype="numpy"):

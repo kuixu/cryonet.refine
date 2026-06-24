@@ -403,7 +403,7 @@ def report_restraint_deviation(
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
-@click.option("--use_global_clash", is_flag=True, help="Global clash flag", default=True)
+@click.option("--use_global_clash/--no-use_global_clash", is_flag=True, help="Global clash flag", default=True)
 @click.option("--validate_output", is_flag=True, help="Validate output flag", default=False)
 @click.option("--ignore_origin", is_flag=True, help="Ignore density origin flag", default=False)
 @click.option("--progress", is_flag=True, help="Write progress values to job status updates", default=False)

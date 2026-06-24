@@ -1,7 +1,8 @@
 #!/bin/bash
+set -eo pipefail
 
 
-j=$1
+j=${1:?Usage: $0 <jobid>}
 
 d=/data1/jobs/$j
 name=$(cat $d/name.list)
@@ -34,10 +35,19 @@ date >$log;
 #     mkdir -p $out_dir
 # fi  
 
-max_tokens=1000
+max_tokens=${CRYONET_REFINE_MAX_TOKENS:-1000}
+recycles=${CRYONET_REFINE_RECYCLES:-300}
 restraint_flags=()
 if [ -f "$restraints_file" ]; then
     restraint_flags+=(--use_user_restraints --restraints_file "$restraints_file")
+fi
+global_clash_flags=()
+if [ "${CRYONET_REFINE_DISABLE_GLOBAL_CLASH:-0}" = "1" ]; then
+    global_clash_flags+=(--no-use_global_clash)
+fi
+validation_flags=()
+if [ "${CRYONET_REFINE_VALIDATE_OUTPUT:-1}" = "1" ]; then
+    validation_flags+=(--validate_output)
 fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Starting CryoNet.Refine..."
@@ -47,16 +57,22 @@ echo "Resolution: $res"
 echo "Output: $out_dir"
 echo "Checkpoint: $checkpoint"
 echo "Max tokens: $max_tokens"
+echo "Recycles: $recycles"
+echo "Validate output: ${CRYONET_REFINE_VALIDATE_OUTPUT:-1}"
 
-CUDA_VISIBLE_DEVICES=0 python main.py \
+refine_python=${CRYONET_REFINE_PYTHON:-python}
+
+CUDA_VISIBLE_DEVICES=0 "$refine_python" main.py \
     $cif \
     --target_density $map \
     --resolution $res \
     --out_dir $d \
     --out_suffix CryoNet.Refine \
     --max_tokens $max_tokens \
-    --validate_output \
-    "${restraint_flags[@]}" \
+    --recycles $recycles \
+    "${validation_flags[@]}" \
+    "${global_clash_flags[@]}" \
+    "${restraint_flags[@]}"
  
 echo "CryoNet.Refine refinement completed!"
 

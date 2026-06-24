@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict,List, Optional, Sequence, Tuple, Union
+import gc
+import os
 from CryoNetRefine.data.utils import status_payload, update_status
 import torch
 import gemmi
@@ -53,6 +55,19 @@ def _normalize_input_paths(input_path: PathInput) -> List[Path]:
     if len(paths) == 0:
         raise ValueError("input_path is empty")
     return paths
+
+
+def _is_memory_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return isinstance(exc, MemoryError) or any(
+        text in msg
+        for text in (
+            "out of memory",
+            "cannot allocate memory",
+            "can't allocate memory",
+            "defaultcpuallocator",
+        )
+    )
 
 def sanitize_models(st: gemmi.Structure, path: Path, enable_progress: bool = False) -> gemmi.Structure:
     valid_model = None
@@ -194,7 +209,7 @@ def validate_initial_cc_from_structure_paths(
     *,
     supported_residue_names: Optional[set[str]] = None,
     enable_progress: bool = False,
-) -> Tuple[float, bool, str]:
+) -> Tuple[Optional[float], Optional[bool], str]:
     """
     Compute global initial CC from the *input structure files* (no batch required).
 
@@ -239,12 +254,25 @@ def validate_initial_cc_from_structure_paths(
     atom_resolved = torch.ones((1, coords.shape[0]), dtype=torch.bool, device=dev)
     feats = {"atom_pad_mask": atom_pad, "atom_resolved_mask": atom_resolved}
 
-    cc, _ = compute_overall_cc_loss(
-        predicted_coords=coords.unsqueeze(0),  # [1, N, 3]
-        target_density=target_density_obj,
-        feats=feats,
-        atom_weights=atom_weights,
-    )
+    try:
+        cc, _ = compute_overall_cc_loss(
+            predicted_coords=coords.unsqueeze(0),  # [1, N, 3]
+            target_density=target_density_obj,
+            feats=feats,
+            atom_weights=atom_weights,
+        )
+    except (RuntimeError, MemoryError) as exc:
+        if not _is_memory_error(exc):
+            raise
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        msg = (
+            "Initial CC check skipped: insufficient memory for full-structure "
+            "density validation. Refinement will continue with crop-based "
+            "density scoring."
+        )
+        return None, None, msg
 
     cc_val = float(cc.detach().cpu().item())
     ok = cc_val > cc_threshold
@@ -336,7 +364,21 @@ def validate_inputs(
                 )
             ]
 
-    if td_obj:
+    if td_obj and os.environ.get("CRYONET_REFINE_SKIP_INITIAL_CC", "").lower() in {"1", "true", "yes"}:
+        cc_msg = (
+            "Initial CC check skipped: CRYONET_REFINE_SKIP_INITIAL_CC is enabled. "
+            "Refinement will continue with crop-based density scoring."
+        )
+        messages.append(cc_msg)
+        update_status(
+            pdb_dir,
+            status_payload(
+                cc_msg,
+                progress=10,
+                enable_progress=enable_progress,
+            ),
+        )
+    elif td_obj:
         cc_val, cc_ok, cc_msg = validate_initial_cc_from_structure_paths(
             input_paths=paths,
             target_density_obj=td_obj,
@@ -346,11 +388,20 @@ def validate_inputs(
             enable_progress=enable_progress,
         )
         messages.append(cc_msg)
-        if not cc_ok:
+        if cc_ok is False:
             update_status(
                 pdb_dir,
                 status_payload(
                     f"Initial CC check: CC={cc_val:.4f} (threshold>{cc_threshold}). CC <= threshold, likely misalignment or invalid input.",
+                    progress=10,
+                    enable_progress=enable_progress,
+                ),
+            )
+        elif cc_ok is None:
+            update_status(
+                pdb_dir,
+                status_payload(
+                    cc_msg,
                     progress=10,
                     enable_progress=enable_progress,
                 ),

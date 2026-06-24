@@ -1256,6 +1256,7 @@ class GeoMetric:
                 return {
                     "bond_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                     "angle_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
+                    "nonbonded_loss": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
                 }
         else:
             # 🚀 Use cache
@@ -1350,5 +1351,4 @@ class GeoMetric:
             "angle_rmsd": angle_rmsd,
             "nonbonded_loss": nonbonded_loss,
         }
-
 

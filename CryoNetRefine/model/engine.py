@@ -22,6 +22,18 @@ from CryoNetRefine.data.crop.molecule_aware import MoleculeTypeAwareSlidingWindo
 from CryoNetRefine.model.model import CryoNetRefineModel
 from CryoNetRefine.loss.geometric import GeometricMetricWrapper, GeometricAdapter
 from CryoNetRefine.loss.loss import refine_loss
+
+
+def _detach_metric_dict(metric_dict):
+    detached = {}
+    for key, value in metric_dict.items():
+        if isinstance(value, torch.Tensor):
+            detached[key] = float(value.detach().cpu().item())
+        else:
+            detached[key] = float(value)
+    return detached
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -242,7 +254,7 @@ class Engine:
             print("⚠️  Warning: Using on-the-fly crop computation (cache not available)")
         
         self.optimizer.zero_grad()
-        total_loss = 0.0
+        total_loss_value = 0.0
         
         # Process each molecule-aware crop sequentially.
         # Keep the aggregated refined_coords on CPU to save GPU memory;
@@ -305,6 +317,9 @@ class Engine:
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
                 crop_batch, target_density, iteration, data_dir, out_dir, int(crop_idx_info), crop_atom_mask
             )
+            loss_dict_cpu = _detach_metric_dict(loss_dict)
+            time_loss_dict_cpu = _detach_metric_dict(time_loss_dict)
+            crop_loss_scaled = crop_loss / num_crops
             
             # Update refined_coords
             refined_coords[crop_atom_mask.unsqueeze(0)] = (
@@ -314,16 +329,18 @@ class Engine:
             )
             
             # Accumulate loss (average across crops)
-            total_loss += crop_loss / num_crops
+            total_loss_value += float(crop_loss_scaled.detach().cpu().item())
             # Backward pass
-            (crop_loss / num_crops).backward(retain_graph=False)
+            crop_loss_scaled.backward(retain_graph=False)
             # Clean up
-            del crop_loss, crop_predicted_coords, crop_batch, crop_token_indices, crop_atom_mask
+            del crop_loss_scaled, crop_loss, crop_predicted_coords, crop_batch
+            del crop_token_indices, crop_atom_mask, loss_dict, time_loss_dict
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             
-            loss_dict_list.append(loss_dict)
-            time_loss_dict_list.append(time_loss_dict)
+            loss_dict_list.append(loss_dict_cpu)
+            time_loss_dict_list.append(time_loss_dict_cpu)
         
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -336,7 +353,7 @@ class Engine:
         #     output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
         #     write_refined_structure(batch, refined_coords, data_dir, output_path)
         return {
-            "total_loss": total_loss.item(),
+            "total_loss": total_loss_value,
             "loss_dic_list": loss_dict_list,
             "time_loss_dict_list": time_loss_dict_list,
             "predicted_coords": refined_coords
@@ -686,7 +703,10 @@ class Engine:
         del s, z, s_inputs, diffusion_conditioning
         predicted_coords = struct_out["sample_atom_coords"]
         if iteration == 0:
-            self.crop_initial_cc[crop_idx] = struct_out["initial_cc"]
+            initial_cc = struct_out["initial_cc"]
+            if isinstance(initial_cc, torch.Tensor):
+                initial_cc = float(initial_cc.detach().cpu().item())
+            self.crop_initial_cc[crop_idx] = initial_cc
         
         # if self.refine_args.weight_dict["den"] > 0.0 and self.crop_initial_cc[crop_idx] <= 0:
         #     web_log_path = Path(out_dir) / f"{self.pdb_id}_web_log.txt"
@@ -728,10 +748,12 @@ class Engine:
 
         # Debug: Print crop loss info
         init_cc = self.crop_initial_cc.get(crop_idx, "N/A")
-        if cc > init_cc:
-            loss_info = f"⬆ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc:.3f}, Loss={total_loss.item():.3f}"
+        cc_value = float(cc.detach().cpu().item()) if isinstance(cc, torch.Tensor) else float(cc)
+        total_loss_value = float(total_loss.detach().cpu().item()) if isinstance(total_loss, torch.Tensor) else float(total_loss)
+        if cc_value > init_cc:
+            loss_info = f"⬆ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc_value:.3f}, Loss={total_loss_value:.3f}"
         else:
-            loss_info = f"⬇ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc:.3f}, Loss={total_loss.item():.3f}"
+            loss_info = f"⬇ Crop {crop_idx}: init={init_cc:.3f}, cur_cc={cc_value:.3f}, Loss={total_loss_value:.3f}"
         for key, value in loss_dict.items():
             loss_info += f", {key}: {value.item():.3f}"
         end_time = time.time()

@@ -23,6 +23,21 @@ from CryoNetRefine.model.modules.utils import (
     log,
 )
 from CryoNetRefine.loss.loss import compute_overall_cc_loss
+
+
+def _is_memory_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return isinstance(exc, MemoryError) or any(
+        text in msg
+        for text in (
+            "out of memory",
+            "cannot allocate memory",
+            "can't allocate memory",
+            "defaultcpuallocator",
+        )
+    )
+
+
 def deep_copy_tensors(obj):
     import copy
 
@@ -327,12 +342,24 @@ class AtomDiffusion(Module):
             atom_coords_denoised = None
             # compute initial cc
             if iteration == 0 and (target_density is not None):
-                initial_cc, _ = compute_overall_cc_loss(
-                    predicted_coords=initial_atom_coords,
-                    target_density=target_density,
-                    feats=network_condition_kwargs["feats"],
-                    atom_weights=atom_weights
-                )
+                try:
+                    initial_cc, _ = compute_overall_cc_loss(
+                        predicted_coords=initial_atom_coords,
+                        target_density=target_density,
+                        feats=network_condition_kwargs["feats"],
+                        atom_weights=atom_weights
+                    )
+                except (RuntimeError, MemoryError) as exc:
+                    if not _is_memory_error(exc):
+                        raise
+                    print(
+                        "Warning: initial crop CC skipped due to insufficient memory; "
+                        "continuing refinement.",
+                        flush=True,
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    initial_cc = torch.tensor(0.0, device=self.device)
             else:
                 initial_cc = 0.0
             
