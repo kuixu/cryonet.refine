@@ -20,6 +20,8 @@ except ImportError:
 from CryoNetRefine.data.parse.validate import sanitize_models
 DEFAULT_PHENIX_ENV = "/opt/phenix-1.21.1-5286/phenix_env.sh"
 DEFAULT_CHIMERAX_CMD = "/usr/bin/chimerax"
+PHENIX_RNA_VALIDATE_START_MARKER = "CRYONET_PHENIX_RNA_VALIDATE_START"
+PHENIX_RNA_VALIDATE_DONE_MARKER = "CRYONET_PHENIX_RNA_VALIDATE_DONE"
 # Read from environment first to avoid hard-coded tool paths in callers.
 phenix_env = os.environ.get("PHENIX_ENV", DEFAULT_PHENIX_ENV)
 chimerax_cmd = os.environ.get("CHIMERAX_CMD", DEFAULT_CHIMERAX_CMD)
@@ -317,6 +319,15 @@ metrics = [
 ]
 cc_metrics = ["CC_mask", "CC_box", "CC_mc", "CC_sc"]
 goal_funcs = [m + "_goal" for m in metrics]
+RNA_VALIDATION_FIELDS = (
+    "rna_backbone",
+    "rna_backbone_outliers",
+    "rna_backbone_total",
+    "rna_backbone_outlier_ratio",
+    "rna_pucker_outliers",
+    "rna_pucker_total",
+    "rna_pucker_outlier_ratio",
+)
 
 logger = logging.getLogger(__file__)
 consoleHandler = logging.StreamHandler(sys.stdout)
@@ -359,6 +370,113 @@ def _safe_int(value_str: str) -> int | None:
         return int(value_str.strip())
     except (ValueError, AttributeError):
         return None
+
+
+def _parse_molprobity_rna_metrics(output: list[str]) -> dict:
+    """
+    Parse RNA validation summaries from the dedicated phenix.rna_validate output.
+    Metrics mirror the RCSB report: backbone suiteness, suite outliers, and
+    sugar pucker outliers as count/total.
+    """
+    # The .vc log also contains phenix.molprobity output, which may include
+    # similarly named RNA sections.  If our explicit rna_validate markers are
+    # present, only parse the last complete marked section.
+    start_idx = None
+    done_idx = None
+    for idx, line in enumerate(output):
+        if PHENIX_RNA_VALIDATE_START_MARKER in line:
+            start_idx = idx + 1
+            done_idx = None
+        elif PHENIX_RNA_VALIDATE_DONE_MARKER in line and start_idx is not None:
+            done_idx = idx
+    if start_idx is not None and done_idx is not None and start_idx < done_idx:
+        output = output[start_idx:done_idx]
+
+    rna_pucker_outliers = None
+    rna_pucker_total = None
+    rna_backbone = None
+    rna_backbone_outliers = None
+    rna_backbone_total = None
+    in_pucker_section = False
+    counted_pucker_rows = 0
+
+    for line in output:
+        stripped = line.strip()
+
+        if "----------Sugar pucker----------" in line:
+            in_pucker_section = True
+            counted_pucker_rows = 0
+            continue
+        if in_pucker_section and "----------Backbone torsion suites----------" in line:
+            in_pucker_section = False
+            if rna_pucker_total is None and counted_pucker_rows > 0:
+                rna_pucker_total = counted_pucker_rows
+            continue
+
+        if in_pucker_section:
+            m = re.search(r"(\d+)\s*/\s*(\d+)\s+pucker outliers present", stripped)
+            if m:
+                rna_pucker_outliers = _safe_int(m.group(1))
+                rna_pucker_total = _safe_int(m.group(2))
+                continue
+            if "All puckers have reasonable geometry" in stripped:
+                rna_pucker_outliers = 0
+                continue
+            fields = stripped.split()
+            if (
+                len(fields) >= 7
+                and _safe_float(fields[3]) is not None
+                and fields[4].lower() in ("yes", "no")
+                and fields[-1].lower() in ("yes", "no")
+            ):
+                counted_pucker_rows += 1
+
+        m = re.search(
+            r"Found\s+(\d+)\s+complete suites derived from\s+(\d+)\s+entries",
+            stripped,
+        )
+        if m:
+            rna_backbone_total = _safe_int(m.group(1))
+            continue
+
+        m = re.search(r"For all\s+\d+\s+suites:\s+average suiteness==\s*([0-9]*\.?[0-9]+)", stripped)
+        if m:
+            rna_backbone = _safe_float(m.group(1))
+            continue
+
+        m = re.search(r"(\d+)\s+suites are\s+outliers", stripped)
+        if m:
+            rna_backbone_outliers = _safe_int(m.group(1))
+
+    if in_pucker_section and rna_pucker_total is None and counted_pucker_rows > 0:
+        rna_pucker_total = counted_pucker_rows
+
+    if rna_pucker_outliers == 0 and rna_pucker_total is None and counted_pucker_rows > 0:
+        rna_pucker_total = counted_pucker_rows
+
+    rna_pucker_outlier_ratio = None
+    if rna_pucker_outliers is not None and rna_pucker_total:
+        rna_pucker_outlier_ratio = round(
+            float(rna_pucker_outliers) / float(rna_pucker_total), 2
+        )
+
+    rna_backbone_outlier_ratio = None
+    if rna_backbone_outliers is not None and rna_backbone_total:
+        rna_backbone_outlier_ratio = round(
+            float(rna_backbone_outliers) / float(rna_backbone_total), 2
+        )
+
+    return {
+        "rna_backbone": rna_backbone,
+        "rna_backbone_outliers": rna_backbone_outliers,
+        "rna_backbone_total": rna_backbone_total,
+        "rna_backbone_outlier_ratio": rna_backbone_outlier_ratio,
+        "rna_pucker_outliers": rna_pucker_outliers,
+        "rna_pucker_total": rna_pucker_total,
+        "rna_pucker_outlier_ratio": rna_pucker_outlier_ratio,
+    }
+
+
 
 def parse_vc(ccfile, per_chain_cc=False):
 
@@ -528,7 +646,8 @@ def parse_vc(ccfile, per_chain_cc=False):
     import math
     if emringer_score is None :
         emringer_score = -100
-        
+    rna_metrics = _parse_molprobity_rna_metrics(output)
+           
     return {
         "chains": chains,
         "atoms": atoms,
@@ -569,6 +688,7 @@ def parse_vc(ccfile, per_chain_cc=False):
         "molprobity_score": molprobity_score,  # 添加到返回字典
         "emringer_score": emringer_score,
         "cablam_outliers": cablam_outliers,
+        **rna_metrics,
     }
 
 
@@ -688,7 +808,7 @@ def _needs_vcx_update(vcx_path: str) -> bool:
     # Ensure we have required fields (value may be NaN, but key must exist)
     return not vcx_has_fields(
         vcx_path,
-        ("QScore", "CSscore", "emringer_score", "cablam_outliers"),
+        ("QScore", "CSscore", "emringer_score", "cablam_outliers") + RNA_VALIDATION_FIELDS,
     )
 
 
@@ -703,6 +823,44 @@ def is_none_vcx(path):
                 return False
     else:
         return True
+
+def _ensure_valid_mmcif_unit_cell(structure, padding: float = 10.0):
+    """
+    Set a synthetic P1 box when mmCIF rewriting would otherwise emit a 1 A cell.
+    Keep Cartesian coordinates unchanged so model/map alignment is preserved.
+    """
+    import gemmi
+
+    coords = []
+    atom_count = 0
+    for model in structure:
+        for chain in model:
+            for residue in chain:
+                for atom in residue:
+                    coords.append((atom.pos.x, atom.pos.y, atom.pos.z))
+                    atom_count += 1
+    if atom_count == 0:
+        return
+
+    cell = structure.cell
+    try:
+        current_volume = float(cell.volume)
+    except Exception:
+        current_volume = 0.0
+    if (
+        cell.a > 1.0
+        and cell.b > 1.0
+        and cell.c > 1.0
+        and current_volume >= atom_count * 5.0
+    ):
+        return
+
+    xs, ys, zs = zip(*coords)
+    a = max(max(xs) - min(xs) + 2.0 * padding, 10.0)
+    b = max(max(ys) - min(ys) + 2.0 * padding, 10.0)
+    c = max(max(zs) - min(zs) + 2.0 * padding, 10.0)
+    structure.cell = gemmi.UnitCell(a, b, c, 90.0, 90.0, 90.0)
+    structure.spacegroup_hm = "P 1"
 
 def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
     """
@@ -744,6 +902,7 @@ def reset_bfactor(pdb_path: str, bfactor_value: str = "0.00"):
             # Let gemmi serialize the mmCIF directly. Rebuilding _atom_site
             # from CIF token values can corrupt quoted atom names such as O5'.
             # Clearing atom.charge makes _atom_site.pdbx_formal_charge write as '?'.
+            _ensure_valid_mmcif_unit_cell(structure)
             doc = structure.make_mmcif_document()
             if not os.path.exists(bak_path):
                 shutil.copy2(pdb_path, bak_path)
@@ -876,6 +1035,32 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
         else:
             logger.info(f"CaBLAM finished for {emdb} (time={dt_cb:.2f}s)")
         need_vcx_update = True
+    # Ensure the dedicated phenix.rna_validate section is present in the same .vc log.
+    # Do not key off "Sugar pucker" / "Backbone torsion suites": phenix.molprobity
+    # may emit those too, but we want the standalone RNA validation output.
+    need_rna_validation = False
+    if os.path.exists(log_path):
+        with open(log_path, "r", errors="ignore") as f:
+            txt = f.read()
+            need_rna_validation = PHENIX_RNA_VALIDATE_DONE_MARKER not in txt
+    if need_rna_validation:
+        logger.info(f"Computing RNA validation via phenix.rna_validate for {emdb}...")
+        rna_validate_cmd = (
+            f"printf '\\n{PHENIX_RNA_VALIDATE_START_MARKER}\\n' && "
+            f"phenix.rna_validate model={shlex.quote(pdb_path)} && "
+            f"printf '\\n{PHENIX_RNA_VALIDATE_DONE_MARKER}\\n'"
+        )
+        logger.info(rna_validate_cmd)
+        t_rna = time.perf_counter()
+        ret_rna = _run_bash_with_env(rna_validate_cmd, cwd=wkdir, log_path=log_path)
+        dt_rna = time.perf_counter() - t_rna
+        if ret_rna != 0:
+            logger.warning(f"phenix.rna_validate failed for {emdb} (exit={ret_rna}, time={dt_rna:.2f}s)")
+            ret = ret_rna
+        else:
+            logger.info(f"phenix.rna_validate finished for {emdb} (time={dt_rna:.2f}s)")
+        need_vcx_update = True
+    
     # Always (re)build vcx when requested, in THIS function only.
     if need_vcx_update and os.path.exists(log_path):
         metrics_dict = parse_vc(log_path, per_chain_cc=False)
@@ -884,6 +1069,9 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
             metrics_dict["emringer_score"] = float("nan")
         if metrics_dict.get("cablam_outliers", None) is None:
             metrics_dict["cablam_outliers"] = float("nan")
+        for k in RNA_VALIDATION_FIELDS:
+            if metrics_dict.get(k, None) is None:
+                metrics_dict[k] = float("nan")
         try:
             ems = float(metrics_dict.get("emringer_score"))
             if math.isfinite(ems):
