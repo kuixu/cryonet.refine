@@ -59,7 +59,7 @@ class RefineArgs:
     use_global_clash: bool = False
     data_dir: str | None = None
     use_molecule_aware_cropping: bool = True 
-    min_improvement = 0
+    min_improvement: float = 0.0
     restraints_file: str | None = None
     use_user_restraints: bool = False
     auto_metal_restraints: bool = True

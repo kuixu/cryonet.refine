@@ -825,6 +825,7 @@ class Engine:
         best_loss = float('inf')
         best_cc = float('-inf')  # Negative infinity
         best_iteration = -1
+        best_loss_dict = {}
         
         # Stream crops on-the-fly instead of pre-materializing all crop batches.
         # This keeps memory bounded by one crop at a time.
@@ -887,6 +888,10 @@ class Engine:
                     best_cc = loss_dict_ep["CC"]
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
+                    best_loss_dict = {
+                        k: v.detach().clone() if torch.is_tensor(v) else v
+                        for k, v in loss_dict_ep.items()
+                    }
                     self.patience_counter = 0
                     # print(f"New best loss: {best_loss:.6f} at iteration {iteration}")
                 else:
@@ -897,6 +902,10 @@ class Engine:
                     best_cc = loss_dict_ep["CC"]
                     best_coords = step_results["predicted_coords"].clone()
                     best_iteration = iteration
+                    best_loss_dict = {
+                        k: v.detach().clone() if torch.is_tensor(v) else v
+                        for k, v in loss_dict_ep.items()
+                    }
                     self.patience_counter = 0
                     # print(f"New best CC: {best_cc:.6f} at iteration {iteration}")
                 else:
@@ -916,12 +925,7 @@ class Engine:
         self.best_iteration = best_iteration
         self.best_loss = best_loss
         self.best_cc = best_cc
-        # 🚀 保存最佳迭代的所有损失值
-        if best_iteration >= 0 and len(loss_dict_list) > best_iteration:
-            self.best_loss_dict = loss_dict_list[best_iteration]
-        else:
-            # 如果没有找到最佳迭代，使用最后一个
-            self.best_loss_dict = loss_dict_ep if 'loss_dict_ep' in locals() else {}
+        self.best_loss_dict = best_loss_dict
         # Return best results if available, otherwise return last results
         if best_coords is not None:
             print(f"Returning best results from iteration {best_iteration} with loss {best_loss:.6f}")
