@@ -19,7 +19,8 @@ out=${out_dir}_CryoNet.Refine.cif
 log=${out_dir}.log
 # python cryofold.py -m $map -s $seq -t $tem 
 
-res=$(jq '.resolution' $stg)
+res=$(jq '.resolution' "$stg")
+status_recycles=$(jq -r '.num_recycles // 100' "$stg")
 echo "-m $map -s $cif -r $res"
 date >$log;
 # CUDA_VISIBLE_DEVICES=0 python cryonet.fold.py -m $map -s $seq -r $res -o $out;
@@ -36,7 +37,7 @@ date >$log;
 # fi  
 
 max_tokens=${CRYONET_REFINE_MAX_TOKENS:-1000}
-recycles=${CRYONET_REFINE_RECYCLES:-300}
+recycles=${CRYONET_REFINE_RECYCLES:-$status_recycles}
 restraint_flags=()
 if [ -f "$restraints_file" ]; then
     restraint_flags+=(--use_user_restraints --restraints_file "$restraints_file")

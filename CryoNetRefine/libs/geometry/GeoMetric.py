@@ -51,6 +51,7 @@ class GeoMetric:
         self._rmsd_sites_cart_cache = None  # sites_cart cache
         self._rmsd_perm_tensor_cache = None  # atom order mapping cache
         self._rmsd_cache_key = None  # cache key used for validity check (based on crop_idx and num_atoms)
+        self._rmsd_failed_cache_keys = set()
         self._nb_i_cpu = None
         self._nb_j_cpu = None
         self._nb_vdw_cpu = None
@@ -166,6 +167,7 @@ class GeoMetric:
         self._rmsd_grm_cache = None
         self._rmsd_perm_tensor_cache = None
         self._rmsd_cache_key = None
+        self._rmsd_failed_cache_keys.clear()
         # 🚀 Clear rama table cache
         if hasattr(self, '_rama_tables_cache'):
             self._rama_tables_cache.clear()
@@ -1015,7 +1017,22 @@ class GeoMetric:
             return None
 
 
-       
+    @staticmethod
+    def _zero_bond_angle_losses(pred_coords_unpad_tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
+        def zero():
+            return torch.tensor(
+                0.0,
+                device=pred_coords_unpad_tensor.device,
+                dtype=torch.float64,
+                requires_grad=True,
+            )
+
+        return {
+            "bond_rmsd": zero(),
+            "angle_rmsd": zero(),
+            "nonbonded_loss": zero(),
+        }
+
     def compute_bond_angle_rmsd_from_pdb(self, pdb_path: str, pred_coords_unpad_tensor: torch.Tensor, cache_key: str = None) -> Dict[str, torch.Tensor]:
         """
         Read coordinates from a PDB file and use mmtbx proxies to compute differentiable geometric RMSD.
@@ -1029,6 +1046,9 @@ class GeoMetric:
         """
         if cache_key is None:
             cache_key = f"{pdb_path}_{pred_coords_unpad_tensor.shape[0]}"
+
+        if cache_key in self._rmsd_failed_cache_keys:
+            return self._zero_bond_angle_losses(pred_coords_unpad_tensor)
         
         cache_valid = (
             self._rmsd_cache_key == cache_key and 
@@ -1163,6 +1183,7 @@ class GeoMetric:
                 self._rmsd_sites_cart_cache = sites_cart
                 self._rmsd_perm_tensor_cache = perm_tensor_cpu
                 self._rmsd_cache_key = cache_key
+                self._rmsd_failed_cache_keys.discard(cache_key)
                 self._energies_sites_cache = energies_sites
                 # ==========================
                 # 🚀 Build tensorized proxy cache
@@ -1252,12 +1273,8 @@ class GeoMetric:
                 print(f"Warning: Error in RMSD calculation for {pdb_path}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Return zeros, allow training to continue
-                return {
-                    "bond_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
-                    "angle_rmsd": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
-                    "nonbonded_loss": torch.tensor(0.0, device=pred_coords_unpad_tensor.device, dtype=torch.float64, requires_grad=True),
-                }
+                self._rmsd_failed_cache_keys.add(cache_key)
+                return self._zero_bond_angle_losses(pred_coords_unpad_tensor)
         else:
             # 🚀 Use cache
             grm = self._rmsd_grm_cache
@@ -1351,4 +1368,3 @@ class GeoMetric:
             "angle_rmsd": angle_rmsd,
             "nonbonded_loss": nonbonded_loss,
         }
-
