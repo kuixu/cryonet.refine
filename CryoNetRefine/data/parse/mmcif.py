@@ -15,6 +15,10 @@ from CryoNetRefine.data.parse.metal_coordination import (
     AutoMetalRestraintOptions,
     build_default_metal_restraints,
 )
+from CryoNetRefine.data.parse.secondary_structure_restraints import (
+    build_default_secondary_structure_restraints,
+    merge_restraint_payloads,
+)
 from CryoNetRefine.data.utils import status_payload, update_status
 from CryoNetRefine.data.types import (
     AtomV2,
@@ -1104,6 +1108,10 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
 ) -> ParsedStructure:
     """Parse a structure in MMCIF format.
 
@@ -1632,7 +1640,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
         ensemble=ensemble,
         coords=coords,
     )
-    default_user_restraints = build_default_metal_restraints(
+    metal_restraints = build_default_metal_restraints(
         structure=data,
         explicit_pairs=explicit_metal_pairs,
         options=AutoMetalRestraintOptions(
@@ -1643,6 +1651,14 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
     )
     _emit_unmatched_ccd_ligand_summary(STATUS_DIR)
     UNMATCHED_CCD_LIGANDS.clear()
+    secondary_restraints = build_default_secondary_structure_restraints(
+        path=path,
+        protein_enabled=protein_secondary_structure_restraints,
+        nucleic_enabled=nucleic_secondary_structure_restraints,
+        mode=secondary_structure_mode,
+        include_single_strands=secondary_structure_include_single_strands,
+    )
+    default_user_restraints = merge_restraint_payloads(metal_restraints, secondary_restraints)
     return ParsedStructure(
         data=data,
         info=info,

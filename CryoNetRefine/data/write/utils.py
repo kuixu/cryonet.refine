@@ -40,7 +40,7 @@ def _load_restraint_bonds(data_dir: Path, record_id: str) -> list[dict]:
         return []
     bonds = payload.get("bonds", [])
     if isinstance(bonds, list):
-        return [b for b in bonds if isinstance(b, dict)]
+        return [b for b in bonds if isinstance(b, dict) and b.get("restraint_source") != "secondary_structure"]
     return []
 
 

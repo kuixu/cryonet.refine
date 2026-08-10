@@ -163,6 +163,52 @@ python  ./CryoNetRefine/data/output/metrics_validation.py \
 
 This command also writes validation files (`.vcx`) in the same directory as the target CIF/PDB file.
 
+### Secondary-Structure Restraints (Optional)
+
+CryoNet.Refine includes a built-in secondary-structure detector. During preprocessing, it can convert detected secondary structure into geometry restraints and apply them during refinement through the existing user-restraint loss path.
+
+Two independent switches control which restraints are generated:
+
+| CLI flag | Default | Meaning |
+|---|---|---|
+| `--protein_secondary_structure_restraints` | off | Enable protein helix and beta-sheet restraints. These are derived from helix/sheet hydrogen-bond geometry and are mainly useful for protein-only or protein-heavy models. |
+| `--nucleic_secondary_structure_restraints` | off | Enable nucleic-acid base-pair and base-stacking restraints. These are derived from base-pair hydrogen bonds and base-plane parallelity and are mainly useful for RNA/DNA-containing models. |
+
+Both switches are disabled by default. You can enable either one or both, depending on the molecule types present in your input model.
+
+Example for a protein model:
+
+```bash
+python main.py input.cif \
+  --target_density map.mrc \
+  --resolution 3.0 \
+  --out_dir ./output \
+  --protein_secondary_structure_restraints
+```
+
+Example for an RNA/DNA-containing model:
+
+```bash
+python main.py input.cif \
+  --target_density map.mrc \
+  --resolution 3.0 \
+  --out_dir ./output \
+  --nucleic_secondary_structure_restraints
+```
+
+Protein-specific options:
+
+- `--secondary_structure_mode auto|detect|existing` (default: `auto`): controls how protein helices/sheets are obtained. `auto` uses existing HELIX/SHEET records in the input when present; `detect` forces built-in detection; `existing` reads annotations only.
+- `--secondary_structure_include_single_strands`: include isolated beta strands as single-strand sheet records.
+
+Restraint loss weights:
+
+- `--user_bond`
+- `--user_angle`
+- `--user_plane_parallelity` (mainly relevant for nucleic-acid base-plane parallelity restraints)
+
+For a convenience script with secondary-structure restraints enabled, see `run_ss_test.sh`.
+
 ---
 
 ## 📁 Project Structure

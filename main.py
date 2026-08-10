@@ -7,8 +7,7 @@ It freezes all modules except the diffusion module and uses CC loss for optimiza
 """
 import os
 import sys
-# Set PYTHONPATH to include project root if not already set
-# This ensures CryoNetRefine package can be found when running compute_ss.py
+# Ensure the project package is importable when this file is run directly.
 if __name__ == "__main__":
     project_root = os.path.dirname(os.path.abspath(__file__))
     if project_root not in sys.path:
@@ -398,6 +397,7 @@ def report_restraint_deviation(
 @click.option("--use_user_restraints/--no-use_user_restraints", is_flag=True, help="Enable explicit user bond/angle restraints", default=False)
 @click.option("--user_bond", type=float, help="Weight for user bond restraint loss", default=1.0)
 @click.option("--user_angle", type=float, help="Weight for user angle restraint loss", default=1.0)
+@click.option("--user_plane_parallelity", type=float, help="Weight for user plane parallelity restraint loss", default=1.0)
 @click.option("--cbeta", type=float, help="Weight for cbeta loss", default=50.0)
 @click.option("--ramaz", type=float, help="Weight for ramaz loss", default=0.1)
 @click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
@@ -425,6 +425,30 @@ def report_restraint_deviation(
     help="Distance cutoff for automatic metal coordination detection",
     default=3.0,
 )
+@click.option(
+    "--protein_secondary_structure_restraints/--no-protein_secondary_structure_restraints",
+    is_flag=True,
+    help="Generate protein helix and sheet restraints during preprocessing",
+    default=False,
+)
+@click.option(
+    "--nucleic_secondary_structure_restraints/--no-nucleic_secondary_structure_restraints",
+    is_flag=True,
+    help="Generate nucleic-acid base-pair and stacking restraints during preprocessing",
+    default=False,
+)
+@click.option(
+    "--secondary_structure_mode",
+    type=click.Choice(["auto", "detect", "existing"]),
+    help="Secondary-structure source: auto prefers existing protein annotation, detect forces search, existing reads only annotations",
+    default="auto",
+)
+@click.option(
+    "--secondary_structure_include_single_strands/--no-secondary_structure_include_single_strands",
+    is_flag=True,
+    help="Keep single beta strands from the built-in secondary-structure search",
+    default=False,
+)
 def refine(
     data: str,
     out_dir: str,
@@ -449,6 +473,7 @@ def refine(
     use_user_restraints: bool = True,
     user_bond: float = 1.0,
     user_angle: float = 1.0,
+    user_plane_parallelity: float = 1.0,
     cbeta: float = 1.0,
     ramaz: float = 0.1,
     learning_rate: float = 1.8e-4,
@@ -461,6 +486,10 @@ def refine(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -493,6 +522,10 @@ def refine(
         auto_metal_restraints=auto_metal_restraints,
         metal_restraint_distance_strategy=metal_restraint_distance_strategy,
         metal_coordination_cutoff=metal_coordination_cutoff,
+        protein_secondary_structure_restraints=protein_secondary_structure_restraints,
+        nucleic_secondary_structure_restraints=nucleic_secondary_structure_restraints,
+        secondary_structure_mode=secondary_structure_mode,
+        secondary_structure_include_single_strands=secondary_structure_include_single_strands,
         enable_progress=progress,
     )
     # Load manifest
@@ -551,6 +584,7 @@ def refine(
     refine_args.weight_dict["angle"] = angle
     refine_args.weight_dict["user_bond"] = user_bond
     refine_args.weight_dict["user_angle"] = user_angle
+    refine_args.weight_dict["user_plane_parallelity"] = user_plane_parallelity
     refine_args.weight_dict["cbeta"] = cbeta
     refine_args.weight_dict["ramaz"] = ramaz
     refine_args.learning_rate = learning_rate
@@ -560,6 +594,10 @@ def refine(
     refine_args.auto_metal_restraints = auto_metal_restraints
     refine_args.metal_restraint_distance_strategy = metal_restraint_distance_strategy
     refine_args.metal_coordination_cutoff = metal_coordination_cutoff
+    refine_args.protein_secondary_structure_restraints = protein_secondary_structure_restraints
+    refine_args.nucleic_secondary_structure_restraints = nucleic_secondary_structure_restraints
+    refine_args.secondary_structure_mode = secondary_structure_mode
+    refine_args.secondary_structure_include_single_strands = secondary_structure_include_single_strands
     user_restraints_spec = None
     if refine_args.use_user_restraints:
         if restraints_file is None:
@@ -609,7 +647,8 @@ def refine(
             click.echo(
                 f"Loaded default atom restraints for {record.id}: "
                 f"{len(resolved_user_restraints.bonds)} bonds, "
-                f"{len(resolved_user_restraints.angles)} angles"
+                f"{len(resolved_user_restraints.angles)} angles, "
+                f"{len(resolved_user_restraints.plane_parallelities)} plane parallelities"
             )
         else:
             refiner.set_user_restraints(None)

@@ -5,6 +5,10 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from CryoNetRefine.data.utils import status_payload, update_status
 from CryoNetRefine.data.parse.mmcif import parse_mmcif, ParsedStructure
+from CryoNetRefine.data.parse.secondary_structure_restraints import (
+    build_default_secondary_structure_restraints,
+    merge_restraint_payloads,
+)
 
 def sanitize_models(st: gemmi.Structure, path: Path) -> gemmi.Structure:
     valid_model = None
@@ -30,6 +34,10 @@ def parse_pdb(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
     enable_progress: bool = False,
 ) -> ParsedStructure:
     with NamedTemporaryFile(suffix=".cif") as tmp_cif_file:
@@ -71,7 +79,7 @@ def parse_pdb(
         doc = structure.make_mmcif_document()
         doc.write_file(tmp_cif_path)
 
-        return parse_mmcif(
+        parsed = parse_mmcif(
             path=tmp_cif_path,
             status_dir= Path(path).parent,
             mols=mols,
@@ -81,4 +89,22 @@ def parse_pdb(
             auto_metal_restraints=auto_metal_restraints,
             metal_restraint_distance_strategy=metal_restraint_distance_strategy,
             metal_coordination_cutoff=metal_coordination_cutoff,
+            protein_secondary_structure_restraints=False,
+            nucleic_secondary_structure_restraints=False,
+        )
+        secondary_restraints = build_default_secondary_structure_restraints(
+            path=path,
+            protein_enabled=protein_secondary_structure_restraints,
+            nucleic_enabled=nucleic_secondary_structure_restraints,
+            mode=secondary_structure_mode,
+            include_single_strands=secondary_structure_include_single_strands,
+        )
+        return ParsedStructure(
+            data=parsed.data,
+            info=parsed.info,
+            sequences=parsed.sequences,
+            default_user_restraints=merge_restraint_payloads(
+                parsed.default_user_restraints,
+                secondary_restraints,
+            ),
         )

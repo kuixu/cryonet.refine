@@ -1,7 +1,6 @@
 import os
-import sys, time
+import time
 import math
-import pickle
 import json
 from typing import Dict, Optional
 from io import StringIO
@@ -16,6 +15,8 @@ from cctbx.geometry_restraints import flags as gr_flags
 from CryoNetRefine.libs.protein import Protein
 from CryoNetRefine.libs.prot_utils import residue_constants 
 from CryoNetRefine.libs.prot_utils.residue_constants import  index_to_restype_3, restype_3_to_index, chisPerAA
+from CryoNetRefine.secondary_structure import detect_secondary_structure
+from CryoNetRefine.secondary_structure.io import iter_chain_residues, read_structure
 from .utils import (
     chiralty, construct_fourth_batch, calc_dihedral_batch, calc_dihedrals,
     interpolate_2d, aaTables, rama_tables, ramaz_db,
@@ -44,8 +45,6 @@ class GeoMetric:
         self.atom_pos = None
         self.bond_proxies_cache = None
         self.angle_proxies_cache = None
-        self.ss_types_res_cache = None
-        self.ss_cache_seq = None  # Used to validate if cache is valid (based on sequence)
         self.pdb_id = None
         self._rmsd_grm_cache = None  # geometry_restraints_manager cache
         self._rmsd_sites_cart_cache = None  # sites_cart cache
@@ -161,8 +160,6 @@ class GeoMetric:
             self._rama_limits_cache[type_id] = limits
 
     def clear_build_cache(self):
-        self.ss_types_res_cache = None
-        self.ss_cache_seq = None
         # 🚀 Clear RMSD calculation cache
         self._rmsd_grm_cache = None
         self._rmsd_perm_tensor_cache = None
@@ -535,36 +532,42 @@ class GeoMetric:
             "rama_outliers": rama_outliers
         }
 
-    def get_ss_from_python(self, output_path: str = None)->torch.Tensor:
-        """
-        Use the Python script get_phenix_ss.py to compute secondary structure (conda environment switch may be required)
+    def get_secondary_structure_labels(self, structure_path: str) -> torch.Tensor:
+        """Compute per-residue secondary-structure labels in process.
 
-        Returns:
-        --------
-        ss_types_res : torch.Tensor
-            Per-residue secondary structure labels:
-            0 = loop (coil)
-            1 = helix (including alpha, 3_10, pi)
-            2 = sheet (beta strand)
-        """
+        Called every recycle so that SS labels track the current refined coordinates.
 
-        script_path = os.path.abspath(__file__)
-        script_dir = os.path.dirname(script_path)
-        get_phenix_ss_script = os.path.join(script_dir, "compute_ss.py")
-        # Find project root (cryonet.refine directory) by going up from current file
-        # GeoMetric.py is at: cryonet.refine/CryoNetRefine/libs/geometry/GeoMetric.py
-        # Project root is 3 levels up
-        project_root = os.path.abspath(os.path.join(script_dir, "..", "..", ".."))
-        # absolute path !
-        pickle_path = os.path.splitext(output_path)[0] + ".pickle"
-        # Run script directly with PYTHONPATH set to project root
-        # Use absolute paths and ensure PYTHONPATH is set correctly
-        env_pythonpath = os.environ.get('PYTHONPATH', '')
-        pythonpath = f"{project_root}:{env_pythonpath}" if env_pythonpath else project_root
-        cmd = f"cd {project_root} && PYTHONPATH={pythonpath} {sys.executable} {get_phenix_ss_script} {output_path} {pickle_path}"
-        os.system(cmd)
-        ss_types_res = torch.load(pickle_path, map_location=self.phi_psi.device, weights_only=True)
-        os.system(f"rm {pickle_path}")
+        Returns
+        -------
+        torch.Tensor, shape [n_residues], dtype=int
+            0 = loop/coil, 1 = helix (alpha/3_10/pi), 2 = sheet (beta strand)
+        """
+        result = detect_secondary_structure(structure_path, mode="detect", detect_nucleic=False)
+
+        st = read_structure(structure_path)
+        residue_list: list[tuple[str, int]] = []
+        for _model_idx, chain_name, residues in iter_chain_residues(st):
+            for res in residues:
+                residue_list.append((chain_name, res.resid.resseq))
+
+        n_residues = len(residue_list)
+        ss_types_res = torch.zeros(n_residues, dtype=torch.int)
+
+        for h in result.helices:
+            cid = h.start.chain
+            s, e = h.start.resseq, h.end.resseq
+            for idx, (chain_id, resseq) in enumerate(residue_list):
+                if chain_id == cid and s <= resseq <= e:
+                    ss_types_res[idx] = 1
+
+        for sh in result.sheets:
+            for strand in sh.strands:
+                cid = strand.start.chain
+                s, e = strand.start.resseq, strand.end.resseq
+                for idx, (chain_id, resseq) in enumerate(residue_list):
+                    if chain_id == cid and s <= resseq <= e:
+                        ss_types_res[idx] = 2
+
         return ss_types_res.to(self.phi_psi.device)
 
     def ramaz_loss(self, output_path: str = None) -> Dict[str, torch.Tensor]:
@@ -575,24 +578,7 @@ class GeoMetric:
         atom_mask = self.prot.atom14_mask.clone().detach()
         device = self.phi_psi.device
         atom2res = self.prot.atom14_mask.nonzero()[0].clone().detach()
-        # 🚀 Use cached secondary structure to avoid redundant calculations
-        # Check if cache is valid: based on sequence match
-        if (
-            self.ss_types_res_cache is not None and
-            self.ss_cache_seq is not None and
-            self.seq is not None and
-            self.ss_cache_seq == self.seq and
-            self.ss_types_res_cache.shape[0] == self.prot_len
-        ):
-            # Use cached secondary structure
-            ss_types_res = self.ss_types_res_cache.to(device)
-        else:
-            # Compute and cache secondary structure
-            ss_types_res = self.get_ss_from_python(output_path).to(device)  # cctbx
-
-            # Cache result (store on CPU to save GPU memory)
-            self.ss_types_res_cache = ss_types_res.clone().detach().cpu()
-            self.ss_cache_seq = self.seq
+        ss_types_res = self.get_secondary_structure_labels(output_path).to(device)
         # z_scores=torch.zeros(self.prot_len-2,dtype=float,requires_grad=True)
         means=torch.zeros((3,22),dtype=float)
         stds=torch.zeros((3,22),dtype=float)
