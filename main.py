@@ -489,6 +489,7 @@ def refine(
     nucleic_secondary_structure_restraints: bool = False,
     secondary_structure_mode: str = "auto",
     secondary_structure_include_single_strands: bool = False,
+    num_workers: int = 0
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -623,6 +624,7 @@ def refine(
     canonicals = load_canonicals(mol_dir)
     crop_featurizer = BoltzFeaturizer()
     # Perform refinement for each structure (crop-first streaming path)
+    peak_vram_gb = 0.0
     for batch_idx, record in enumerate(tqdm(processed.manifest.records, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx} (record={record.id})")
         case = prepare_inference_case(
@@ -695,9 +697,15 @@ def refine(
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
+        peak_vram_gb = max(
+            peak_vram_gb,
+            float(getattr(refiner, "overall_peak_alloc_gb", 0.0) or 0.0),
+        )
     click.echo("Refinement completed!")
     end_time = time.time()
     click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
+    if peak_vram_gb > 0:
+        click.echo(f"Peak GPU VRAM: {peak_vram_gb:.2f} GB")
 
 if __name__ == "__main__":
     refine()

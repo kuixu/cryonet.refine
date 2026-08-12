@@ -785,6 +785,8 @@ class Engine:
             loss_history: History of losses during refinement
         """
         # print(f"Starting refinement for {self.refine_args.num_recycles} recycles...")
+        overall_peak_alloc_gb = 0.0
+        overall_peak_reserved_gb = 0.0
         model = self._get_model()
         model.train()  # Set 
         self.global_feats = {}
@@ -858,6 +860,8 @@ class Engine:
         for iteration in range(self.refine_args.num_recycles):
             # Perform refinement step
             # start_time = time.time()
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             step_results = self.refine_step(batch, target_density, iteration, data_dir, out_dir)
             # print(f"Time taken for refine_step: {time.time() - start_time:.2f} seconds")
             # Track loss
@@ -878,6 +882,11 @@ class Engine:
             for k, v in time_loss_dict_ep.items():
                 time_line += f" {k}: {v:.3f} "
             print(time_line)
+            if torch.cuda.is_available():
+                peak_alloc_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+                peak_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
+                overall_peak_alloc_gb = max(overall_peak_alloc_gb, peak_alloc_gb)
+                overall_peak_reserved_gb = max(overall_peak_reserved_gb, peak_reserved_gb)
 
             self.loss_history.append(current_loss)
             
@@ -926,6 +935,8 @@ class Engine:
         self.best_loss = best_loss
         self.best_cc = best_cc
         self.best_loss_dict = best_loss_dict
+        self.overall_peak_alloc_gb = overall_peak_alloc_gb
+        self.overall_peak_reserved_gb = overall_peak_reserved_gb
         # Return best results if available, otherwise return last results
         if best_coords is not None:
             print(f"Returning best results from iteration {best_iteration} with loss {best_loss:.6f}")
