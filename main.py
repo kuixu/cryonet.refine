@@ -400,7 +400,7 @@ def report_restraint_deviation(
 @click.option("--user_plane_parallelity", type=float, help="Weight for user plane parallelity restraint loss", default=1.0)
 @click.option("--cbeta", type=float, help="Weight for cbeta loss", default=50.0)
 @click.option("--ramaz", type=float, help="Weight for ramaz loss", default=0.1)
-@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
+@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-3)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 @click.option("--use_global_clash/--no-use_global_clash", is_flag=True, help="Global clash flag", default=True)
@@ -476,9 +476,8 @@ def refine(
     user_plane_parallelity: float = 1.0,
     cbeta: float = 1.0,
     ramaz: float = 0.1,
-    learning_rate: float = 1.8e-4,
+    learning_rate: float = 1.8e-3,
     max_norm_sigmas_value: float = 1.0,
-    num_workers: int = 0,
     use_global_clash: bool = True,
     validate_output: bool = False,
     ignore_origin: bool = False,
@@ -497,7 +496,6 @@ def refine(
     data = Path(data).expanduser()
     data_stem = data.stem
     out_dir = Path(out_dir).expanduser()
-    # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
     validate_inputs(
