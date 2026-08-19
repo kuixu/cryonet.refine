@@ -211,10 +211,10 @@ def compute_qscore_chimerax(
             flags=re.IGNORECASE,
         )
         if not m:
-            return -100
+            return -0
         return float(m.group(1))
     except Exception:
-        return -100
+        return -0
 
 
 def _is_finite_number(x) -> bool:
