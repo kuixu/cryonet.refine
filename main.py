@@ -400,7 +400,7 @@ def report_restraint_deviation(
 @click.option("--user_plane_parallelity", type=float, help="Weight for user plane parallelity restraint loss", default=1.0)
 @click.option("--cbeta", type=float, help="Weight for cbeta loss", default=50.0)
 @click.option("--ramaz", type=float, help="Weight for ramaz loss", default=0.1)
-@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-4)
+@click.option("--learning_rate", type=float, help="Learning rate for refinement", default=1.8e-3)
 @click.option("--max_norm_sigmas_value", type=float, help="max norm sigmas value", default=1.0)
 @click.option("--num_workers", type=int, help="Number of data loader workers", default=0)
 @click.option("--use_global_clash/--no-use_global_clash", is_flag=True, help="Global clash flag", default=True)
@@ -476,9 +476,8 @@ def refine(
     user_plane_parallelity: float = 1.0,
     cbeta: float = 1.0,
     ramaz: float = 0.1,
-    learning_rate: float = 1.8e-4,
+    learning_rate: float = 1.8e-3,
     max_norm_sigmas_value: float = 1.0,
-    num_workers: int = 0,
     use_global_clash: bool = True,
     validate_output: bool = False,
     ignore_origin: bool = False,
@@ -490,6 +489,7 @@ def refine(
     nucleic_secondary_structure_restraints: bool = False,
     secondary_structure_mode: str = "auto",
     secondary_structure_include_single_strands: bool = False,
+    num_workers: int = 0
 ) -> None:
     """Run structure refinement with Boltz.""" 
     start_time = time.time()
@@ -497,7 +497,6 @@ def refine(
     data = Path(data).expanduser()
     data_stem = data.stem
     out_dir = Path(out_dir).expanduser()
-    # out_dir = out_dir / f"{data.stem}_{out_suffix}"
     out_dir.mkdir(parents=True, exist_ok=True)
     data = check_inputs(data)
     validate_inputs(
@@ -625,6 +624,7 @@ def refine(
     canonicals = load_canonicals(mol_dir)
     crop_featurizer = BoltzFeaturizer()
     # Perform refinement for each structure (crop-first streaming path)
+    peak_vram_gb = 0.0
     for batch_idx, record in enumerate(tqdm(processed.manifest.records, desc="Refining structures")):
         click.echo(f"\nProcessing batch {batch_idx} (record={record.id})")
         case = prepare_inference_case(
@@ -697,9 +697,15 @@ def refine(
             click.echo(f"Validation completed for {output_path}")
         click.echo(f"Best Loss: {best_loss:.3f}, CC: {best_cc:.3f} at iteration {best_iteration}")
         click.echo(f"Refined structure {batch_idx} saved to {output_path}")
+        peak_vram_gb = max(
+            peak_vram_gb,
+            float(getattr(refiner, "overall_peak_alloc_gb", 0.0) or 0.0),
+        )
     click.echo("Refinement completed!")
     end_time = time.time()
     click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
+    if peak_vram_gb > 0:
+        click.echo(f"Peak GPU VRAM: {peak_vram_gb:.2f} GB")
 
 if __name__ == "__main__":
     refine()

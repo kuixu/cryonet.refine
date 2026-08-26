@@ -149,9 +149,18 @@ def mol_atom_density_th(atom_coords, atom_weight, res=3.0, voxel_size:torch.Tens
         C = end - start
         ra_expanded = ra.unsqueeze(0).expand(C, -1)
 
-        ii = torch.exp(-torch.pow(ra_expanded - x_chunk.unsqueeze(1), 2))
-        jj = torch.exp(-torch.pow(ra_expanded - y_chunk.unsqueeze(1), 2))
-        kk = torch.exp(-torch.pow(ra_expanded - z_chunk.unsqueeze(1), 2))
+        # ii = torch.exp(-torch.pow(ra_expanded - x_chunk.unsqueeze(1), 2))
+        # jj = torch.exp(-torch.pow(ra_expanded - y_chunk.unsqueeze(1), 2))
+        # kk = torch.exp(-torch.pow(ra_expanded - z_chunk.unsqueeze(1), 2))
+        ii = torch.exp(-torch.pow(
+            (ra_expanded - x_chunk.unsqueeze(1)) / gauss_radius, 2
+        ))
+        jj = torch.exp(-torch.pow(
+            (ra_expanded - y_chunk.unsqueeze(1)) / gauss_radius, 2
+        ))
+        kk = torch.exp(-torch.pow(
+            (ra_expanded - z_chunk.unsqueeze(1)) / gauss_radius, 2
+        ))
         atom_cubes = torch.einsum('ni,nj,nk->nijk', ii, jj, kk)
         atom_cubes *= w_chunk.view(-1, 1, 1, 1)
 
