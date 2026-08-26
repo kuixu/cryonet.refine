@@ -51,9 +51,20 @@ class AngleRestraintSpec:
 
 
 @dataclass(frozen=True)
+class PlaneParallelityRestraintSpec:
+    plane1: tuple[AtomSelector, ...]
+    plane2: tuple[AtomSelector, ...]
+    angle_ideal_deg: float = 0.0
+    sigma: float | None = None
+    weight: float | None = None
+    slack_deg: float = 0.0
+
+
+@dataclass(frozen=True)
 class UserRestraintsSpec:
     bonds: tuple[BondRestraintSpec, ...] = ()
     angles: tuple[AngleRestraintSpec, ...] = ()
+    plane_parallelities: tuple[PlaneParallelityRestraintSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,9 +89,20 @@ class ResolvedAngleRestraint:
 
 
 @dataclass(frozen=True)
+class ResolvedPlaneParallelityRestraint:
+    atom_idxs1: tuple[int, ...]
+    atom_idxs2: tuple[int, ...]
+    angle_ideal_deg: float
+    sigma: float | None
+    weight: float
+    slack_deg: float
+
+
+@dataclass(frozen=True)
 class ResolvedUserRestraints:
     bonds: tuple[ResolvedBondRestraint, ...] = ()
     angles: tuple[ResolvedAngleRestraint, ...] = ()
+    plane_parallelities: tuple[ResolvedPlaneParallelityRestraint, ...] = ()
     atom_lookup: dict[int, str] | None = None
 
 
@@ -112,6 +134,18 @@ def _angle_identity(
     return (center, (outer[0], outer[1]))
 
 
+def _plane_parallelity_identity(
+    plane: PlaneParallelityRestraintSpec,
+) -> tuple[tuple[tuple[str | None, ...], ...], tuple[tuple[str | None, ...], ...]]:
+    planes = sorted(
+        (
+            tuple(sorted(_selector_identity(atom) for atom in plane.plane1)),
+            tuple(sorted(_selector_identity(atom) for atom in plane.plane2)),
+        )
+    )
+    return (planes[0], planes[1])
+
+
 def merge_user_restraints_specs(
     first: UserRestraintsSpec | None,
     second: UserRestraintsSpec | None,
@@ -133,9 +167,16 @@ def merge_user_restraints_specs(
     ] = {_angle_identity(angle): angle for angle in first.angles}
     for angle in second.angles:
         merged_angles[_angle_identity(angle)] = angle
+    merged_planes: dict[
+        tuple[tuple[tuple[str | None, ...], ...], tuple[tuple[str | None, ...], ...]],
+        PlaneParallelityRestraintSpec,
+    ] = {_plane_parallelity_identity(plane): plane for plane in first.plane_parallelities}
+    for plane in second.plane_parallelities:
+        merged_planes[_plane_parallelity_identity(plane)] = plane
     return UserRestraintsSpec(
         bonds=tuple(merged_bonds.values()),
         angles=tuple(merged_angles.values()),
+        plane_parallelities=tuple(merged_planes.values()),
     )
 
 
@@ -246,6 +287,31 @@ def _parse_angle(entry: dict[str, Any], idx: int) -> AngleRestraintSpec:
     )
 
 
+def _parse_plane_parallelity(entry: dict[str, Any], idx: int) -> PlaneParallelityRestraintSpec:
+    context = f"plane_parallelities[{idx}]"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{context} must be a mapping.")
+    plane1_raw = entry.get("plane1")
+    plane2_raw = entry.get("plane2")
+    if not isinstance(plane1_raw, list) or len(plane1_raw) < 3:
+        raise ValueError(f"{context}.plane1 must contain at least three atom selectors.")
+    if not isinstance(plane2_raw, list) or len(plane2_raw) < 3:
+        raise ValueError(f"{context}.plane2 must contain at least three atom selectors.")
+    angle_ideal_deg = float(entry.get("angle_ideal_deg", 0.0))
+    weight, sigma = _resolve_weight_sigma(entry.get("weight"), entry.get("sigma"), context)
+    slack_deg = float(entry.get("slack_deg", 0.0))
+    if slack_deg < 0:
+        raise ValueError(f"{context}.slack_deg must be >= 0.")
+    return PlaneParallelityRestraintSpec(
+        plane1=tuple(_parse_selector(atom, f"{context}.plane1[{i}]") for i, atom in enumerate(plane1_raw)),
+        plane2=tuple(_parse_selector(atom, f"{context}.plane2[{i}]") for i, atom in enumerate(plane2_raw)),
+        angle_ideal_deg=angle_ideal_deg,
+        sigma=sigma,
+        weight=weight,
+        slack_deg=slack_deg,
+    )
+
+
 def parse_user_restraints_dict(raw: dict[str, Any] | None) -> UserRestraintsSpec:
     if raw is None:
         raw = {}
@@ -253,7 +319,15 @@ def parse_user_restraints_dict(raw: dict[str, Any] | None) -> UserRestraintsSpec
         raise ValueError("Restraints file root must be a mapping.")
     bonds = tuple(_parse_bond(entry, i) for i, entry in enumerate(raw.get("bonds", [])))
     angles = tuple(_parse_angle(entry, i) for i, entry in enumerate(raw.get("angles", [])))
-    return UserRestraintsSpec(bonds=bonds, angles=angles)
+    plane_parallelities = tuple(
+        _parse_plane_parallelity(entry, i)
+        for i, entry in enumerate(raw.get("plane_parallelities", []))
+    )
+    return UserRestraintsSpec(
+        bonds=bonds,
+        angles=angles,
+        plane_parallelities=plane_parallelities,
+    )
 
 
 def load_user_restraints(path: str | Path | None) -> UserRestraintsSpec | None:
@@ -390,8 +464,33 @@ def resolve_user_restraints(
                 slack_deg=float(angle.slack_deg),
             )
         )
+    resolved_planes: list[ResolvedPlaneParallelityRestraint] = []
+    for idx, plane in enumerate(spec.plane_parallelities):
+        atom_idxs1 = tuple(
+            _resolve_selector(atom, atom_records, f"plane_parallelities[{idx}].plane1[{i}]").atom_idx
+            for i, atom in enumerate(plane.plane1)
+        )
+        atom_idxs2 = tuple(
+            _resolve_selector(atom, atom_records, f"plane_parallelities[{idx}].plane2[{i}]").atom_idx
+            for i, atom in enumerate(plane.plane2)
+        )
+        if len(set(atom_idxs1)) < 3:
+            raise ValueError(f"plane_parallelities[{idx}].plane1 must resolve to at least three distinct atoms.")
+        if len(set(atom_idxs2)) < 3:
+            raise ValueError(f"plane_parallelities[{idx}].plane2 must resolve to at least three distinct atoms.")
+        resolved_planes.append(
+            ResolvedPlaneParallelityRestraint(
+                atom_idxs1=atom_idxs1,
+                atom_idxs2=atom_idxs2,
+                angle_ideal_deg=float(plane.angle_ideal_deg),
+                sigma=plane.sigma,
+                weight=float(plane.weight if plane.weight is not None else 0.0),
+                slack_deg=float(plane.slack_deg),
+            )
+        )
     return ResolvedUserRestraints(
         bonds=tuple(resolved_bonds),
         angles=tuple(resolved_angles),
+        plane_parallelities=tuple(resolved_planes),
         atom_lookup=atom_lookup,
     )

@@ -1,0 +1,32 @@
+HEADER    SYNTHETIC SECONDARY STRUCTURE FIXTURE
+HELIX    1   1 ALA A    1  ALA A   12  1                                  12
+SHEET    1   A 2 ALA B   1  ALA B   6  0
+SHEET    2   A 2 ALA C   1  ALA C   6  1  N   ALA C   1   O   ALA B   1
+ATOM      1  CA  ALA A   1       2.300   0.000   0.000  1.00 20.00           C
+ATOM      2  CA  ALA A   2      -0.399   2.265   1.500  1.00 20.00           C
+ATOM      3  CA  ALA A   3      -2.161  -0.787   3.000  1.00 20.00           C
+ATOM      4  CA  ALA A   4       1.150  -1.992   4.500  1.00 20.00           C
+ATOM      5  CA  ALA A   5       1.762   1.478   6.000  1.00 20.00           C
+ATOM      6  CA  ALA A   6      -1.762   1.478   7.500  1.00 20.00           C
+ATOM      7  CA  ALA A   7      -1.150  -1.992   9.000  1.00 20.00           C
+ATOM      8  CA  ALA A   8       2.161  -0.787  10.500  1.00 20.00           C
+ATOM      9  CA  ALA A   9       0.399   2.265  12.000  1.00 20.00           C
+ATOM     10  CA  ALA A  10      -2.300   0.000  13.500  1.00 20.00           C
+ATOM     11  CA  ALA A  11       0.399  -2.265  15.000  1.00 20.00           C
+ATOM     12  CA  ALA A  12       2.161   0.787  16.500  1.00 20.00           C
+TER
+ATOM     13  CA  ALA B   1       0.000  10.000   0.000  1.00 20.00           C
+ATOM     14  CA  ALA B   2       3.300  10.000   0.000  1.00 20.00           C
+ATOM     15  CA  ALA B   3       6.600  10.000   0.000  1.00 20.00           C
+ATOM     16  CA  ALA B   4       9.900  10.000   0.000  1.00 20.00           C
+ATOM     17  CA  ALA B   5      13.200  10.000   0.000  1.00 20.00           C
+ATOM     18  CA  ALA B   6      16.500  10.000   0.000  1.00 20.00           C
+TER
+ATOM     19  CA  ALA C   1       0.000  14.500   0.000  1.00 20.00           C
+ATOM     20  CA  ALA C   2       3.300  14.500   0.000  1.00 20.00           C
+ATOM     21  CA  ALA C   3       6.600  14.500   0.000  1.00 20.00           C
+ATOM     22  CA  ALA C   4       9.900  14.500   0.000  1.00 20.00           C
+ATOM     23  CA  ALA C   5      13.200  14.500   0.000  1.00 20.00           C
+ATOM     24  CA  ALA C   6      16.500  14.500   0.000  1.00 20.00           C
+TER
+END

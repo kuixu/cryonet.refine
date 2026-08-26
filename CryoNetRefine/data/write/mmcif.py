@@ -630,6 +630,8 @@ def to_mmcif(
         append_struct_conn(atom_idx1, atom_idx2, conn_type, dist)
 
     for rb in restraint_bonds or []:
+        if rb.get("restraint_source") == "secondary_structure":
+            continue
         a1 = rb.get("atom1", {})
         a2 = rb.get("atom2", {})
         key1 = (

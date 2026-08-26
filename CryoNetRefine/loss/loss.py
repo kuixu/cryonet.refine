@@ -337,6 +337,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         # output_path = data_dir_str + f"/{record_id}_crop{crop_idx}_temp.pdb"
         # write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, output_path)
     else:
+        output_path = data_dir_str + f"/{record_id}_temp.cif"
         write_refined_structure_cif(predicted_coords, feats, data_dir, output_path)
         # write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path)
     if not is_nucleic_acid:
@@ -522,12 +523,15 @@ def refine_loss(
     user_losses = compute_user_restraint_losses(restraint_coords, user_restraints)
     user_bond_w = float(weights.get("user_bond", 0.0))
     user_angle_w = float(weights.get("user_angle", 0.0))
+    user_plane_parallelity_w = float(weights.get("user_plane_parallelity", 0.0))
     loss_dict["user_bond"] = user_losses["user_bond"] * user_bond_w
     loss_dict["user_angle"] = user_losses["user_angle"] * user_angle_w
+    loss_dict["user_plane_parallelity"] = user_losses["user_plane_parallelity"] * user_plane_parallelity_w
     total_loss = (
         total_loss
         + user_bond_w * user_losses["user_bond"]
         + user_angle_w * user_losses["user_angle"]
+        + user_plane_parallelity_w * user_losses["user_plane_parallelity"]
     )
     
     time_loss_dict["CC_time"] = CC_time

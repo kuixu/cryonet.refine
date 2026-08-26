@@ -8,6 +8,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from CryoNetRefine.data.parse.secondary_structure_restraints import (
+    NUCLEIC_BASEPAIR_PARALLELITY_SIGMA_RAD,
+    _add_plane_parallelity,
+    _na_hbond_angle_params,
+)
 from CryoNetRefine.data.parse.restraints import (
     load_user_restraints,
     merge_user_restraints_specs,
@@ -15,6 +20,7 @@ from CryoNetRefine.data.parse.restraints import (
     resolve_user_restraints,
 )
 from CryoNetRefine.data.types import AtomV2, BondV2, Chain, Coords, Ensemble, Interface, Residue, StructureV2
+from CryoNetRefine.data.write.utils import _load_restraint_bonds
 from CryoNetRefine.loss.loss import refine_loss
 from CryoNetRefine.loss.user_restraints import compute_user_restraint_losses
 
@@ -179,6 +185,36 @@ def test_compute_user_restraint_losses_zero_at_ideal():
     assert torch.allclose(losses["user_angle"], torch.tensor(0.0), atol=1e-5)
 
 
+def test_compute_user_plane_parallelity_loss_zero_at_ideal():
+    structure = _make_structure()
+    plane = [
+        {"chain": "A", "resseq": "1", "resname": "ZN", "atom_name": "ZN"},
+        {"chain": "A", "resseq": "2", "resname": "HIS", "atom_name": "ND1"},
+        {"chain": "A", "resseq": "2", "resname": "HIS", "atom_name": "NE2"},
+    ]
+    spec = parse_user_restraints_dict(
+        {
+            "plane_parallelities": [
+                {
+                    "plane1": plane,
+                    "plane2": plane,
+                    "angle_ideal_deg": 0.0,
+                    "sigma": 1.0,
+                }
+            ]
+        }
+    )
+    resolved = resolve_user_restraints(spec, structure)
+    coords = torch.tensor(
+        [[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]]],
+        dtype=torch.float32,
+    )
+    losses = compute_user_restraint_losses(coords, resolved)
+    assert resolved is not None
+    assert len(resolved.plane_parallelities) == 1
+    assert torch.allclose(losses["user_plane_parallelity"], torch.tensor(0.0), atol=1e-3)
+
+
 def test_merge_user_restraints_specs_user_overrides_default_duplicates():
     default_spec = parse_user_restraints_dict(
         {
@@ -282,14 +318,95 @@ def test_refine_loss_user_restraints_reduce_violation():
     assert abs(end_distance - 2.0) < abs(start_distance - 2.0)
 
 
+def test_secondary_structure_restraint_bonds_not_exported_as_struct_conn(tmp_path):
+    constraints_dir = tmp_path / "constraints"
+    data_dir = tmp_path / "templates"
+    constraints_dir.mkdir()
+    data_dir.mkdir()
+    constraints_path = constraints_dir / "model.json"
+    constraints_path.write_text(
+        json.dumps(
+            {
+                "bonds": [
+                    {
+                        "atom1": {"auth_asym_id": "A", "auth_seq_id": "1", "auth_comp_id": "ALA", "atom_name": "O"},
+                        "atom2": {"auth_asym_id": "A", "auth_seq_id": "5", "auth_comp_id": "ALA", "atom_name": "N"},
+                        "distance_ideal": 2.9,
+                        "sigma": 0.05,
+                        "restraint_source": "secondary_structure",
+                        "secondary_structure_type": "protein_helix",
+                    },
+                    {
+                        "atom1": {"auth_asym_id": "A", "auth_seq_id": "1", "auth_comp_id": "ZN", "atom_name": "ZN"},
+                        "atom2": {"auth_asym_id": "A", "auth_seq_id": "2", "auth_comp_id": "HIS", "atom_name": "ND1"},
+                        "distance_ideal": 2.1,
+                        "sigma": 0.1,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    bonds = _load_restraint_bonds(data_dir, "model")
+    assert len(bonds) == 1
+    assert bonds[0]["distance_ideal"] == 2.1
+
+
+def test_nucleic_n1_n3_angle_params_follow_atom_order():
+    assert _na_hbond_angle_params("N1", "N3", "G", "C") == ((119.1, 2.59), (116.3, 2.66))
+    assert _na_hbond_angle_params("N3", "N1", "C", "G") == ((116.3, 2.66), (119.1, 2.59))
+    assert _na_hbond_angle_params("N1", "N3", "A", "U") == ((116.2, 3.46), (115.8, 2.88))
+    assert _na_hbond_angle_params("N3", "N1", "U", "A") == ((115.8, 2.88), (116.2, 3.46))
+
+
+def test_secondary_structure_plane_parallelity_uses_cctbx_radian_weight():
+    class _Resid:
+        def __init__(self, chain, name, resseq):
+            self.chain = chain
+            self.name = name
+            self.resseq = resseq
+            self.icode = ""
+
+        def resid(self):
+            return str(self.resseq)
+
+        def selection(self):
+            return f"chain '{self.chain}' and resid {self.resseq}"
+
+    class _Residue:
+        def __init__(self, chain, name, resseq):
+            self.resid = _Resid(chain, name, resseq)
+
+        def atom(self, atom_name):
+            return object() if atom_name in {"N1", "C2", "N3"} else None
+
+    payload = {"plane_parallelities": []}
+    _add_plane_parallelity(
+        payload,
+        accepted_planes=set(),
+        residue1=_Residue("A", "G", 1),
+        residue2=_Residue("B", "C", 2),
+        sigma_rad=NUCLEIC_BASEPAIR_PARALLELITY_SIGMA_RAD,
+        ss_kind="nucleic_base_pair",
+        parent={"kind": "base_pair"},
+    )
+    plane = payload["plane_parallelities"][0]
+    assert np.isclose(plane["sigma"], np.degrees(NUCLEIC_BASEPAIR_PARALLELITY_SIGMA_RAD))
+    assert np.isclose(plane["weight"], 1.0 / (NUCLEIC_BASEPAIR_PARALLELITY_SIGMA_RAD**2))
+
+
 def _run_as_script() -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp_path = Path(td)
         test_load_and_resolve_user_restraints_json(tmp_path)
         test_resolve_user_restraints_duplicate_match_error(tmp_path)
+        test_secondary_structure_restraint_bonds_not_exported_as_struct_conn(tmp_path)
     test_compute_user_restraint_losses_zero_at_ideal()
+    test_compute_user_plane_parallelity_loss_zero_at_ideal()
     test_merge_user_restraints_specs_user_overrides_default_duplicates()
     test_refine_loss_user_restraints_reduce_violation()
+    test_nucleic_n1_n3_angle_params_follow_atom_order()
+    test_secondary_structure_plane_parallelity_uses_cctbx_radian_weight()
     print("All user restraint tests passed.")
 
 

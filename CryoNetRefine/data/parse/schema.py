@@ -255,6 +255,10 @@ def parse_refine_schema(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
     enable_progress: bool = False,
 ) -> Target:
     """Parse a cif/pdb file for refinement.
@@ -280,6 +284,10 @@ def parse_refine_schema(
             auto_metal_restraints=auto_metal_restraints,
             metal_restraint_distance_strategy=metal_restraint_distance_strategy,
             metal_coordination_cutoff=metal_coordination_cutoff,
+            protein_secondary_structure_restraints=protein_secondary_structure_restraints,
+            nucleic_secondary_structure_restraints=nucleic_secondary_structure_restraints,
+            secondary_structure_mode=secondary_structure_mode,
+            secondary_structure_include_single_strands=secondary_structure_include_single_strands,
             enable_progress=enable_progress,
         )
     else:
@@ -292,6 +300,10 @@ def parse_refine_schema(
             auto_metal_restraints=auto_metal_restraints,
             metal_restraint_distance_strategy=metal_restraint_distance_strategy,
             metal_coordination_cutoff=metal_coordination_cutoff,
+            protein_secondary_structure_restraints=protein_secondary_structure_restraints,
+            nucleic_secondary_structure_restraints=nucleic_secondary_structure_restraints,
+            secondary_structure_mode=secondary_structure_mode,
+            secondary_structure_include_single_strands=secondary_structure_include_single_strands,
         )
     # Use the parsed template data directly
     data = parsed.data          # StructureV2

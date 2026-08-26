@@ -61,6 +61,37 @@ def _angle_loss(
     return coords.new_tensor(weight) * (delta_slack * delta_slack)
 
 
+def _plane_normal(coords: torch.Tensor, atom_idxs: tuple[int, ...], eps: float = 1e-8) -> torch.Tensor:
+    points = coords[list(atom_idxs)]
+    center = torch.mean(points, dim=0)
+    centered = points - center
+    rolled = torch.roll(centered, shifts=-1, dims=0)
+    normal = torch.sum(torch.cross(centered, rolled, dim=-1), dim=0)
+    norm = torch.sqrt(torch.sum(normal * normal) + eps)
+    return normal / norm
+
+
+def _plane_parallelity_loss(
+    coords: torch.Tensor,
+    atom_idxs1: tuple[int, ...],
+    atom_idxs2: tuple[int, ...],
+    angle_ideal_deg: float,
+    weight: float,
+    slack_deg: float,
+) -> torch.Tensor:
+    n1 = _plane_normal(coords, atom_idxs1)
+    n2 = _plane_normal(coords, atom_idxs2)
+    cos_theta = torch.abs(torch.sum(n1 * n2))
+    cos_theta = torch.clamp(cos_theta, min=-1.0 + 1e-7, max=1.0 - 1e-7)
+    angle_model = torch.rad2deg(torch.acos(cos_theta))
+    delta = angle_model - angle_ideal_deg
+    delta_slack = _slack_delta(delta, slack_deg)
+    # Match cctbx.geometry_restraints.parallelity: residual = weight *
+    # (1 - cos(delta_angle)), where delta_angle is converted from degrees to
+    # radians inside the cosine.
+    return coords.new_tensor(weight) * (1.0 - torch.cos(torch.deg2rad(delta_slack)))
+
+
 def compute_user_restraint_losses(
     coords: torch.Tensor,
     restraints: ResolvedUserRestraints | None,
@@ -73,7 +104,7 @@ def compute_user_restraint_losses(
         raise ValueError(f"Expected coords shape [N, 3], got {tuple(coords.shape)}.")
     zero = coords.new_zeros(())
     if restraints is None:
-        return {"user_bond": zero, "user_angle": zero}
+        return {"user_bond": zero, "user_angle": zero, "user_plane_parallelity": zero}
 
     bond_losses = []
     for bond in restraints.bonds:
@@ -100,14 +131,33 @@ def compute_user_restraint_losses(
                 slack_deg=angle.slack_deg,
             )
         )
+    plane_losses = []
+    for plane in restraints.plane_parallelities:
+        plane_losses.append(
+            _plane_parallelity_loss(
+                coords=coords,
+                atom_idxs1=plane.atom_idxs1,
+                atom_idxs2=plane.atom_idxs2,
+                angle_ideal_deg=plane.angle_ideal_deg,
+                weight=plane.weight,
+                slack_deg=plane.slack_deg,
+            )
+        )
 
     user_bond = torch.stack(bond_losses).mean() if bond_losses else zero
     user_angle = torch.stack(angle_losses).mean() if angle_losses else zero
+    user_plane_parallelity = torch.stack(plane_losses).mean() if plane_losses else zero
     if not torch.isfinite(user_bond):
         raise ValueError("Non-finite user bond restraint loss encountered.")
     if not torch.isfinite(user_angle):
         raise ValueError("Non-finite user angle restraint loss encountered.")
-    return {"user_bond": user_bond, "user_angle": user_angle}
+    if not torch.isfinite(user_plane_parallelity):
+        raise ValueError("Non-finite user plane parallelity restraint loss encountered.")
+    return {
+        "user_bond": user_bond,
+        "user_angle": user_angle,
+        "user_plane_parallelity": user_plane_parallelity,
+    }
 
 
 def summarize_user_restraints(restraints: ResolvedUserRestraints | None) -> str:
@@ -115,5 +165,6 @@ def summarize_user_restraints(restraints: ResolvedUserRestraints | None) -> str:
         return "user restraints: disabled"
     return (
         f"user restraints: {len(restraints.bonds)} bonds, "
-        f"{len(restraints.angles)} angles"
+        f"{len(restraints.angles)} angles, "
+        f"{len(restraints.plane_parallelities)} plane parallelities"
     )

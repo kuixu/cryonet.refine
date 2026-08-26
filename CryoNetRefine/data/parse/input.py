@@ -55,16 +55,21 @@ class RefineArgs:
         "nonbonded" : 50,
         "user_bond": 1.0,
         "user_angle": 1.0,
+        "user_plane_parallelity": 1.0,
     })
     use_global_clash: bool = False
     data_dir: str | None = None
     use_molecule_aware_cropping: bool = True 
-    min_improvement = 0
+    min_improvement: float = 0.0
     restraints_file: str | None = None
     use_user_restraints: bool = False
     auto_metal_restraints: bool = True
     metal_restraint_distance_strategy: str = "input"
     metal_coordination_cutoff: float = 3.0
+    protein_secondary_structure_restraints: bool = False
+    nucleic_secondary_structure_restraints: bool = False
+    secondary_structure_mode: str = "auto"
+    secondary_structure_include_single_strands: bool = False
 
 
 
@@ -149,6 +154,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
     enable_progress: bool = False,
 ) -> None:
     try:
@@ -162,6 +171,10 @@ def process_input(  # noqa: C901, PLR0912, PLR0915, D103
                 auto_metal_restraints=auto_metal_restraints,
                 metal_restraint_distance_strategy=metal_restraint_distance_strategy,
                 metal_coordination_cutoff=metal_coordination_cutoff,
+                protein_secondary_structure_restraints=protein_secondary_structure_restraints,
+                nucleic_secondary_structure_restraints=nucleic_secondary_structure_restraints,
+                secondary_structure_mode=secondary_structure_mode,
+                secondary_structure_include_single_strands=secondary_structure_include_single_strands,
                 enable_progress=enable_progress,
             )
         elif path.is_dir():
@@ -215,6 +228,10 @@ def process_inputs(
     auto_metal_restraints: bool = True,
     metal_restraint_distance_strategy: str = "input",
     metal_coordination_cutoff: float = 3.0,
+    protein_secondary_structure_restraints: bool = False,
+    nucleic_secondary_structure_restraints: bool = False,
+    secondary_structure_mode: str = "auto",
+    secondary_structure_include_single_strands: bool = False,
     enable_progress: bool = False,
 ) -> Manifest:
     """Process the input data and output directory.
@@ -280,6 +297,10 @@ def process_inputs(
         auto_metal_restraints=auto_metal_restraints,
         metal_restraint_distance_strategy=metal_restraint_distance_strategy,
         metal_coordination_cutoff=metal_coordination_cutoff,
+        protein_secondary_structure_restraints=protein_secondary_structure_restraints,
+        nucleic_secondary_structure_restraints=nucleic_secondary_structure_restraints,
+        secondary_structure_mode=secondary_structure_mode,
+        secondary_structure_include_single_strands=secondary_structure_include_single_strands,
         enable_progress=enable_progress,
     )
 
