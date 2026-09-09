@@ -64,13 +64,11 @@ def add_percentile(score_dict):
         score_dict[k+"_perc"]=ip
         # print(k,v,ip)
 
-    #  calibrate rama_out, rotamer_out, cbeta_deviations
-    if score_dict['rama_outliers']==0: 
-        score_dict['rama_outliers_perc']=1.0
-    if score_dict['rotamer_outliers']==0:
-        score_dict['rotamer_outliers_perc']=1.0
-    if score_dict['cbeta_deviations']==0:
-        score_dict['cbeta_deviations_perc']=1.0
+    # Zero outliers are optimal. Missing metrics remain absent rather than
+    # failing validation or being reported as measurements of zero.
+    for metric in ("rama_outliers", "rotamer_outliers", "cbeta_deviations"):
+        if score_dict.get(metric) == 0:
+            score_dict[f"{metric}_perc"] = 1.0
 
     # add reference percentiles
     for k,v in ref_percentiles.items():
@@ -129,5 +127,4 @@ if __name__ == "__main__":
         status_path=sys.argv[2]
         key=sys.argv[3]
         vcx2json(vcx_path, status_path, key)
-
 
