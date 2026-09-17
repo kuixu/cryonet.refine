@@ -10,7 +10,22 @@ out_dir=$d/${name}
 map=${out_dir}.mrc
 stg=$d/status
 restraints_file=$d/user_restraints.json
-cif_filename=$(jq -r '.pdbfile_local | split("/")[-1]' $stg)
+refine_python=${CRYONET_REFINE_PYTHON:-python}
+mapfile -t status_values < <("$refine_python" - "$stg" <<'PY'
+import json
+import os
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    status = json.load(handle)
+
+pdbfile = status.get("pdbfile_local") or status.get("pdbfile") or ""
+print(os.path.basename(str(pdbfile)))
+print(status.get("resolution", 0.0))
+print(status.get("num_recycles", 100))
+PY
+)
+cif_filename=${status_values[0]}
 cif=${d}/${cif_filename}
 
 # tem=${out_dir}_aem0.pdb
@@ -19,8 +34,8 @@ out=${out_dir}_CryoNet.Refine.cif
 log=${out_dir}.log
 # python cryofold.py -m $map -s $seq -t $tem 
 
-res=$(jq '.resolution' "$stg")
-status_recycles=$(jq -r '.num_recycles // 100' "$stg")
+res=${status_values[1]}
+status_recycles=${status_values[2]}
 echo "-m $map -s $cif -r $res"
 date >$log;
 # CUDA_VISIBLE_DEVICES=0 python cryonet.fold.py -m $map -s $seq -r $res -o $out;
@@ -60,8 +75,6 @@ echo "Checkpoint: $checkpoint"
 echo "Max tokens: $max_tokens"
 echo "Recycles: $recycles"
 echo "Validate output: ${CRYONET_REFINE_VALIDATE_OUTPUT:-1}"
-
-refine_python=${CRYONET_REFINE_PYTHON:-python}
 
 CUDA_VISIBLE_DEVICES=0 "$refine_python" main.py \
     $cif \

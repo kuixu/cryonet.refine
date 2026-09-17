@@ -204,6 +204,8 @@ def compute_qscore_chimerax(
                 timeout=timeout_sec,
                 check=False,
             )
+        if cp.returncode != 0:
+            return float("nan")
         out = cp.stdout or ""
         m = re.search(
             r"Overall mean Q-Score:\s*([0-9]*\.?[0-9]+)",
@@ -211,10 +213,10 @@ def compute_qscore_chimerax(
             flags=re.IGNORECASE,
         )
         if not m:
-            return -0
+            return float("nan")
         return float(m.group(1))
     except Exception:
-        return -0
+        return float("nan")
 
 
 def _is_finite_number(x) -> bool:
@@ -965,7 +967,8 @@ def run_validation(map_path: str, pdb_path: str, r: float, metrics_key: str = "m
     if need_phenix_run:
         # Reset bfactor before validation (skip for CIF files to avoid format issues)
         # logger.info(f"Reset bfactor to {BFACTOR_DEFAULT.strip()} for {pdb_path}")
-        reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
+        if not pdb_path.lower().endswith((".cif", ".mmcif")):
+            reset_bfactor(pdb_path, BFACTOR_DEFAULT.strip())
 
         cmd0 = f"rm -f {log_path}; "
         os.system(cmd0)
