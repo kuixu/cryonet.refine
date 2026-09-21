@@ -53,30 +53,46 @@ Try CryoNet.Refine online without installation:
 
 ## 🚀 Installation
 
-### 1.1 Create Conda Environment
+### 1.1 Create the reproducible Conda environment
 
 From the project root (`cryonet.refine`):
 
 ```bash
-conda env create -f cryonet.refine_env.yml
+conda-lock install --name cryonet.refine conda-lock.yml
 conda activate cryonet.refine
 ```
 
-### 1.2 Install PyTorch (CUDA 12.1)
-
-Use the official PyTorch CUDA 12.1 wheels:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
-For users in China, you can alternatively use the Aliyun mirror:
+The checked-in lock file targets `linux-64` with glibc 2.28 or newer and installs the tested Python,
+PyTorch/CUDA, cctbx, Conda, and pip package builds without re-solving the
+environment. Install `conda-lock` first if the command is unavailable:
 
 ```bash
-pip install torch==2.5.1 -f https://mirrors.aliyun.com/pytorch-wheels/cu12
+conda install --name base --channel conda-forge conda-lock
 ```
 
-### 1.3 Install cctbx chem_data
+For dependency development, regenerate the environment from the minimal direct
+dependency specification, then update the lock file:
+
+```bash
+conda env create -f cryonet.refine_env.yml
+conda activate cryonet.refine
+conda-lock lock \
+  --file cryonet.refine_env.yml \
+  --platform linux-64 \
+  --virtual-package-spec conda-lock-virtual-packages.yml
+```
+
+The environment specification intentionally uses canonical channel names and
+`nodefaults`. Configure a geographically closer Conda mirror in your personal
+Conda configuration when needed; do not add mirror URLs to the project file,
+because doing so changes the dependency sources for every user.
+
+PyTorch 2.6.0 is installed once from its pinned PyPI wheel. On Linux, that wheel
+brings its matching CUDA 12.4 runtime packages without mixing PyTorch's LLVM/ICU
+dependencies into the older Conda ABI required by cctbx-base 2023.2. Do not
+install a second PyTorch build after creating the environment.
+
+### 1.2 Install cctbx chem_data
 
 CryoNet.Refine uses cctbx geometry libraries and requires `chem_data`:
 

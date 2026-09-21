@@ -1,0 +1,6 @@
+# Virtual packages describe the minimum Linux runtime expected by the lock
+# solver. They are not installed into the environment.
+subdirs:
+  linux-64:
+    packages:
+      __glibc: "2.28"
