@@ -49,10 +49,8 @@ from CryoNetRefine.libs.density.density import DensityInfo
 from CryoNetRefine.model.model import CryoNetRefineModel
 from CryoNetRefine.model.engine import Engine, RefineArgs, set_seed
 from CryoNetRefine.data.write.utils import write_refined_structure
-import urllib.request
+from CryoNetRefine.assets import download_asset
 warnings.filterwarnings("ignore", ".*that has Tensor Cores. To properly utilize them.*")
-
-MOL_URL = "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/mols.tar"
 
 
 def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
@@ -73,43 +71,12 @@ def ensure_checkpoint(checkpoint: Optional[str]) -> Path:
     else:
         checkpoint_path = Path(checkpoint)
     
-    # Check if checkpoint exists and is not empty
-    if not checkpoint_path.exists() or checkpoint_path.stat().st_size == 0:
-        # Create params directory if it doesn't exist
-        params_dir = Path(__file__).resolve().parent / "params"
-        params_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Check if downloaded checkpoint already exists in params directory
-        download_url = "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/CryoNet.Refine_model.pt"
-        downloaded_checkpoint = params_dir / "CryoNet.Refine_model.pt"
-        click.echo(f"Checkpoint not found or empty. Try to download from {download_url}...")
-        
-        # If the downloaded checkpoint already exists and is not empty, use it
-        if downloaded_checkpoint.exists() and downloaded_checkpoint.stat().st_size > 0:
-            click.echo(f"Found existing downloaded checkpoint in params directory: {downloaded_checkpoint}")
-            checkpoint_path = downloaded_checkpoint
-        else:
-            # Download checkpoint from URL
-            click.echo(f"Downloading checkpoint from {download_url}...")
-            try:
-                # Download with progress bar
-                response = urllib.request.urlopen(download_url)
-                total_size = int(response.headers.get('Content-Length', 0))
-                
-                with open(downloaded_checkpoint, 'wb') as f:
-                    with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc="Downloading checkpoint") as pbar:
-                        while True:
-                            chunk = response.read(8192)  # 8KB chunks
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            pbar.update(len(chunk))
-                
-                click.echo(f"Downloaded checkpoint to {downloaded_checkpoint}")
-            except Exception as e:
-                raise RuntimeError(f"Failed to download checkpoint: {e}")
-            
-            checkpoint_path = downloaded_checkpoint
+    # Keep an explicitly supplied, nonempty custom checkpoint. For the default
+    # checkpoint, verify its hash and download from the next source if needed.
+    default_checkpoint = Path(__file__).resolve().parent / "params" / "CryoNet.Refine_model.pt"
+    if checkpoint_path != default_checkpoint and checkpoint_path.is_file() and checkpoint_path.stat().st_size > 0:
+        return checkpoint_path
+    checkpoint_path = download_asset("CryoNet.Refine_model.pt", default_checkpoint)
     
     return checkpoint_path
 
@@ -138,46 +105,7 @@ def ensure_mols_dir(mol_dir: Path) -> Path:
             for _ in tar:
                 pass
 
-    click.echo(f"Molecule directory is empty, downloading from {MOL_URL}...")
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            if tar_path.exists():
-                tar_path.unlink()
-            with urllib.request.urlopen(MOL_URL) as response:
-                total_size = int(response.headers.get("Content-Length", 0))
-                downloaded = 0
-                with tar_path.open("wb") as f:
-                    with tqdm(
-                        total=total_size,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        desc=f"Downloading mols.tar (attempt {attempt}/{max_retries})",
-                    ) as pbar:
-                        while True:
-                            chunk = response.read(8192)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            pbar.update(len(chunk))
-            if total_size > 0 and downloaded != total_size:
-                raise RuntimeError(
-                    f"Incomplete download: expected {total_size} bytes, got {downloaded} bytes."
-                )
-            _validate_tar(tar_path)
-            last_error = None
-            break
-        except Exception as e:  # noqa: BLE001
-            last_error = e
-            click.echo(f"Download/validation failed on attempt {attempt}: {e}")
-            if tar_path.exists():
-                tar_path.unlink()
-            if attempt < max_retries:
-                time.sleep(2)
-    if last_error is not None:
-        raise RuntimeError(f"Failed to download valid mols archive after {max_retries} attempts: {last_error}")
+    download_asset("mols.tar", tar_path, validate=_validate_tar, retries_per_url=max_retries)
 
     try:
         if extract_dir.exists():

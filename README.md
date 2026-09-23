@@ -124,6 +124,31 @@ sh ./run.sh ./examples/0775_af3.cif ./examples/emd_0775.map 3.6 ./output
 
 The script will run the full refinement pipeline and save refined atomic model into `./output`.
 
+<!-- ### Download sources for model and test assets
+
+If the checkpoint or the two files used by `run_test.sh` are missing, CryoNet.Refine
+tries the authors' Aliyun OSS source first and then the
+[Hugging Face mirror](https://huggingface.co/FuyaoHuang/cryonet-refine-assets).
+The downloaded files are checked against their SHA-256 hashes before they are
+moved into place; interrupted or incorrect downloads are not accepted.
+`mols.tar` uses Aliyun OSS first and the
+[Boltz repository](https://huggingface.co/boltz-community/boltz-2/resolve/main/mols.tar)
+second, with archive validation. The Boltz file is hosted by a third party and
+is not part of the CryoNet.Refine mirror.
+
+To use your own source order or a local mirror, set comma-separated URLs before
+running the script. The first working source is used:
+
+```bash
+export CRYONET_ASSET_BASE_URLS="https://your-mirror.example/assets,https://huggingface.co/FuyaoHuang/cryonet-refine-assets/resolve/main"
+export CRYONET_MOLS_URLS="https://your-mirror.example/mols.tar,https://huggingface.co/boltz-community/boltz-2/resolve/main/mols.tar"
+```
+
+`CRYONET_ASSET_BASE_URLS` contains directory URLs for the checkpoint,
+`0775_af3.cif`, and `0775.mrc`. `CRYONET_MOLS_URLS` contains full archive URLs.
+An existing default checkpoint or test asset with an incorrect hash is
+re-downloaded; an explicitly supplied custom checkpoint is used as-is. -->
+
 > ⚠️ **Large density map origin (`--ignore_origin`)**  
 > A very large map origin can hurt refinement. With `--ignore_origin`, the density and atomic coordinates are shifted together so they are aligned near the origin(0,0,0) during refinement, which removes that offset effect. Uncomment `--ignore_origin` in `run.sh` when needed.
 
