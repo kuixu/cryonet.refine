@@ -84,6 +84,7 @@ class Engine:
         self.crop_first_featurizer = None
         self.crop_first_override_method = None
         self.crop_first_seed = 42
+        self.crop_batch_cache = {}
         self.crop_feature_cache = {}
         self._use_global_clash_this_run = self.refine_args.use_global_clash
         self.user_restraints: ResolvedUserRestraints | None = None
@@ -216,6 +217,57 @@ class Engine:
         self.crop_first_override_method = override_method
         self.crop_first_seed = int(random_seed)
         self.crop_first_featurizer = featurizer if featurizer is not None else BoltzFeaturizer()
+        # Cache keys are crop-local, so caches must never survive a record change.
+        self.crop_batch_cache.clear()
+        self.crop_feature_cache.clear()
+        if hasattr(self, "crop_atom_types_cache"):
+            self.crop_atom_types_cache.clear()
+
+    def _get_crop_first_batch(self, batch, crop_info):
+        """Build a deterministic crop batch once and reuse its CPU tensors."""
+        crop_idx, crop_token_indices, molecule_type, crop_metadata = self._unpack_crop_info(crop_info)
+        cached = self.crop_batch_cache.get(crop_idx)
+        if cached is not None:
+            return dict(cached["batch"]), cached["atom_mask"], cached["token_indices"]
+
+        if isinstance(crop_token_indices, torch.Tensor):
+            crop_token_indices_np = crop_token_indices.detach().cpu().numpy()
+        else:
+            crop_token_indices_np = np.asarray(crop_token_indices, dtype=np.int64)
+        random_state = np.random.default_rng(self.crop_first_seed + crop_idx)
+        features, global_token_indices, global_atom_indices = self.crop_first_featurizer.process_crop(
+            data=self.crop_first_tokenized,
+            crop_token_indices=crop_token_indices_np,
+            random=random_state,
+            molecules=self.crop_first_molecules,
+            max_atoms=None,
+            max_tokens=self.max_tokens if self.max_tokens > 0 else None,
+            compute_frames=True,
+            override_method=self.crop_first_override_method,
+        )
+        crop_batch = self._single_sample_to_batch(features)
+        crop_batch["record"] = [self.crop_first_record]
+        crop_batch["is_cropped"] = True
+        crop_batch["crop_type"] = "molecule_aware"
+        crop_batch["molecule_type"] = molecule_type
+        crop_batch["crop_metadata"] = crop_metadata
+        crop_batch["crop_idx"] = crop_idx
+        crop_batch["crop_size"] = int(len(global_token_indices))
+        crop_batch["crop_start"] = int(global_token_indices.min()) if len(global_token_indices) else 0
+        crop_batch["global_atom_indices"] = torch.from_numpy(
+            np.asarray(global_atom_indices, dtype=np.int64)
+        ).long()
+
+        n_global_atoms = int(batch["atom_pad_mask"].shape[1])
+        crop_atom_mask = torch.zeros(n_global_atoms, dtype=torch.bool)
+        crop_atom_mask[crop_batch["global_atom_indices"]] = True
+        cached = {
+            "batch": crop_batch,
+            "atom_mask": crop_atom_mask,
+            "token_indices": global_token_indices,
+        }
+        self.crop_batch_cache[crop_idx] = cached
+        return dict(crop_batch), crop_atom_mask, global_token_indices
 
     def _unpack_crop_info(self, crop_info):
         """Return (crop_idx, crop_token_indices, molecule_type, crop_metadata)."""
@@ -253,7 +305,7 @@ class Engine:
             num_crops = len(all_crops)
             print("⚠️  Warning: Using on-the-fly crop computation (cache not available)")
         
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         total_loss_value = 0.0
         
         # Process each molecule-aware crop sequentially.
@@ -269,40 +321,9 @@ class Engine:
         for crop_idx, crop_info in enumerate(all_crops):
             crop_idx_info, crop_token_indices, molecule_type, crop_metadata = self._unpack_crop_info(crop_info)
             if self.crop_first_tokenized is not None and self.crop_first_molecules is not None:
-                if isinstance(crop_token_indices, torch.Tensor):
-                    crop_token_indices_np = crop_token_indices.detach().cpu().numpy()
-                else:
-                    crop_token_indices_np = np.asarray(crop_token_indices, dtype=np.int64)
-                random_state = np.random.default_rng(self.crop_first_seed + int(crop_idx_info))
-                features, global_token_indices, global_atom_indices = self.crop_first_featurizer.process_crop( # ~0.98 seconds
-                    data=self.crop_first_tokenized,
-                    crop_token_indices=crop_token_indices_np,
-                    random=random_state,
-                    molecules=self.crop_first_molecules,
-                    max_atoms=None,
-                    max_tokens=self.max_tokens if self.max_tokens > 0 else None,
-                    compute_frames=True,
-                    override_method=self.crop_first_override_method,
+                crop_batch, crop_atom_mask, crop_token_indices = self._get_crop_first_batch(
+                    batch, crop_info
                 )
-                end_time = time.time()
-                crop_batch = self._single_sample_to_batch(features)
-                crop_batch["record"] = [self.crop_first_record]
-                crop_batch["is_cropped"] = True
-                crop_batch["crop_type"] = "molecule_aware"
-                crop_batch["molecule_type"] = molecule_type
-                crop_batch["crop_metadata"] = crop_metadata
-                crop_batch["crop_idx"] = int(crop_idx_info)
-                crop_batch["crop_size"] = int(len(global_token_indices))
-                crop_batch["crop_start"] = int(global_token_indices.min()) if len(global_token_indices) else 0
-                crop_batch["global_atom_indices"] = torch.from_numpy(
-                    np.asarray(global_atom_indices, dtype=np.int64)
-                ).long()
-
-                n_global_atoms = int(batch["atom_pad_mask"].shape[1])
-                crop_atom_mask = torch.zeros(n_global_atoms, dtype=torch.bool)
-                global_atom_indices_t = crop_batch["global_atom_indices"]
-                crop_atom_mask[global_atom_indices_t] = True
-                crop_token_indices = global_token_indices
             else:
                 crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
                     batch, crop_info
@@ -335,20 +356,12 @@ class Engine:
             # Clean up
             del crop_loss_scaled, crop_loss, crop_predicted_coords, crop_batch
             del crop_token_indices, crop_atom_mask, loss_dict, time_loss_dict
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
             
             loss_dict_list.append(loss_dict_cpu)
             time_loss_dict_list.append(time_loss_dict_cpu)
         
         self.optimizer.step()
-        self.optimizer.zero_grad()
-        self.model.zero_grad()
-        # Garbage collection
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        self.optimizer.zero_grad(set_to_none=True)
         # if out_dir:
         #     output_path = out_dir / "refined_predictions" / f"{self.pdb_id}" /f"{self.pdb_id}_iteration_{iteration:04d}_refined_structure.cif"
         #     write_refined_structure(batch, refined_coords, data_dir, output_path)
