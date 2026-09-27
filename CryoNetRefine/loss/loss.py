@@ -161,7 +161,7 @@ def probe_style_clash_loss(
             coords_j: torch.Tensor,
             atom_vdw_i: torch.Tensor,
             atom_vdw_j: torch.Tensor,
-            diag_flag: torch.Tensor,
+            diag_flag: bool,
         ) -> torch.Tensor:
             # coords_*: [1, ci/cj, 3], atom_vdw_*: [1, ci/cj]
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
@@ -170,7 +170,7 @@ def probe_style_clash_loss(
                 gap = dists - (atom_vdw_i.unsqueeze(2) + atom_vdw_j.unsqueeze(1))  # [1, ci, cj]
                 x = gap - clash_cutoff
                 prob = torch.sigmoid(-softness * x)  # [1, ci, cj]
-                if diag_flag.item() == 1:
+                if diag_flag:
                     # Keep strict upper triangle only (avoid self-pairs + double counting)
                     ci = coords_i.shape[1]
                     triu = torch.triu(
@@ -188,7 +188,7 @@ def probe_style_clash_loss(
             atom_res_j: torch.Tensor,
             atom_chain_i: torch.Tensor,
             atom_chain_j: torch.Tensor,
-            diag_flag: torch.Tensor,
+            diag_flag: bool,
         ) -> torch.Tensor:
             # atom_res_*: [1, ci/cj]
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
@@ -204,7 +204,7 @@ def probe_style_clash_loss(
                 neighbor_mask = same_chain & (torch.abs(res_diff) <= float(exclude_neighbor_distance))
                 prob = prob * (~neighbor_mask).to(prob.dtype)
 
-                if diag_flag.item() == 1:
+                if diag_flag:
                     ci = coords_i.shape[1]
                     triu = torch.triu(
                         torch.ones((ci, ci), dtype=torch.bool, device=device), diagonal=1
@@ -225,11 +225,11 @@ def probe_style_clash_loss(
                 atom_mask_j = atom_mask[:, j:end_j]    # [1, chunk_j]
                 atom_vdw_j = atom_vdw_radii[:, j:end_j]  # [1, chunk_j]
 
-                diag_flag = torch.tensor(1 if i == j else 0, device=device)
+                diag_flag = i == j
                 if atom_res_idx is not None:
                     atom_res_i = atom_res_idx[:, i:end_i]  # [1, chunk_i]
                     atom_res_j = atom_res_idx[:, j:end_j]  # [1, chunk_j]
-                    soft_n_clashes = soft_n_clashes + checkpoint(
+                    block_loss = checkpoint(
                         _clash_block_sum_with_neighbor_exclusion,
                         coords_i,
                         coords_j,
@@ -243,7 +243,7 @@ def probe_style_clash_loss(
                         use_reentrant=False,
                     )
                 else:
-                    soft_n_clashes = soft_n_clashes + checkpoint(
+                    block_loss = checkpoint(
                         _clash_block_sum,
                         coords_i,
                         coords_j,
@@ -252,6 +252,7 @@ def probe_style_clash_loss(
                         diag_flag,
                         use_reentrant=False,
                     )
+                soft_n_clashes = soft_n_clashes + block_loss
         
         n_atoms = atom_mask.sum().clamp(min=1).float()  # Total number of valid atoms
         clashscore = soft_n_clashes * 1000.0 / n_atoms  # Clashscore normalized per 1000 atoms
@@ -400,7 +401,10 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         loss_dict["clash"] = torch.zeros((), device=device)
         time_loss_dict["clash"] = 0.0
 
-    os.system(f"rm {output_path}")
+    try:
+        os.remove(output_path)
+    except FileNotFoundError:
+        pass
     return loss_dict, time_loss_dict
 
 def refine_loss(

@@ -41,7 +41,7 @@ class RefineArgs:
     
     learning_rate: float = 1.8e-4
     num_recycles: int = 300
-    early_stopping_patience: int = 20
+    early_stopping_patience: int = 50
     weight_dict: dict = field(default_factory=lambda: {
         "den": 20.0, 
         "geometric": 1.0,
@@ -319,4 +319,3 @@ def process_inputs(
     records = [Record.load(p) for p in records_dir.glob("*.json")]
     manifest = Manifest(records)
     manifest.dump(out_dir / f"processed_{data_stem}" / "manifest.json")
-

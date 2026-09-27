@@ -29,7 +29,9 @@ def make_engine():
     engine.crop_first_featurizer = FakeFeaturizer()
     engine.max_tokens = 512
     engine.crop_batch_cache = {}
+    engine.crop_batch_device_cache = {}
     engine.crop_feature_cache = {"stale": object()}
+    engine.global_template_coords_cache = object()
     engine.crop_atom_types_cache = {"stale": object()}
     return engine
 
@@ -61,5 +63,7 @@ def test_new_crop_context_clears_record_local_caches():
     )
 
     assert engine.crop_batch_cache == {}
+    assert engine.crop_batch_device_cache == {}
     assert engine.crop_feature_cache == {}
+    assert engine.global_template_coords_cache is None
     assert engine.crop_atom_types_cache == {}

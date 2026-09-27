@@ -15,11 +15,11 @@ from cctbx.geometry_restraints import flags as gr_flags
 from CryoNetRefine.libs.protein import Protein
 from CryoNetRefine.libs.prot_utils import residue_constants 
 from CryoNetRefine.libs.prot_utils.residue_constants import  index_to_restype_3, restype_3_to_index, chisPerAA
-from CryoNetRefine.secondary_structure import detect_secondary_structure
 from CryoNetRefine.secondary_structure.io import iter_chain_residues, read_structure
+from CryoNetRefine.secondary_structure.protein import detect_protein_secondary_structure
 from .utils import (
     chiralty, construct_fourth_batch, calc_dihedral_batch, calc_dihedrals,
-    interpolate_2d, aaTables, rama_tables, ramaz_db,
+    aaTables, rama_tables, ramaz_db,
     SS_TYPE, ss2idx, RAMA_RESNAME, rama_res2idx, SS_CALIBRATION_VALUES
 )
 # Ramachandran type constants
@@ -53,7 +53,11 @@ class GeoMetric:
         self._rmsd_failed_cache_keys = set()
         self._nb_i_cpu = None
         self._nb_j_cpu = None
+        self._chi_gather_cache = None
         self._nb_vdw_cpu = None
+        self._rmsd_device_tensor_cache = {}
+        self._rama_table_device_cache = {}
+        self._rotamer_table_device_cache = {}
         self._setup_static_attributes()
 
         if protein is not None:
@@ -145,6 +149,32 @@ class GeoMetric:
         self.ramaz_table_tensor = table_tensor
         self._ramaz_means = means_tensor
         self._ramaz_stds  = stds_tensor
+
+        # RamaZ uses population-weighted moments. They depend only on the
+        # bundled database, so calculate them once instead of once per crop.
+        weighted_means = torch.zeros((len(SS_TYPE), len(RAMA_RESNAME)), dtype=torch.float32)
+        weighted_stds = torch.zeros((len(SS_TYPE), len(RAMA_RESNAME)), dtype=torch.float32)
+        for ss_idx, ss in enumerate(SS_TYPE):
+            for res_idx, resname in enumerate(RAMA_RESNAME):
+                values = ramaz_db[ss][resname]
+                reg_sum = 0
+                sq_sum = 0
+                for row in values:
+                    for value in row:
+                        reg_sum += value
+                        sq_sum += value * value
+                mean = sq_sum / reg_sum if reg_sum > 0 else 0
+                ch = 0
+                zn = 0
+                for row in values:
+                    for value in row:
+                        ch += value * (value - mean) ** 2
+                        zn += value
+                zn -= 1
+                weighted_means[ss_idx, res_idx] = mean
+                weighted_stds[ss_idx, res_idx] = math.sqrt(ch / zn) if zn != 0 else 0
+        self._ramaz_weighted_means = weighted_means
+        self._ramaz_weighted_stds = weighted_stds
         
         self._setup_rama_tables_cache()
 
@@ -165,6 +195,9 @@ class GeoMetric:
         self._rmsd_perm_tensor_cache = None
         self._rmsd_cache_key = None
         self._rmsd_failed_cache_keys.clear()
+        self._rmsd_device_tensor_cache.clear()
+        self._rama_table_device_cache.clear()
+        self._rotamer_table_device_cache.clear()
         # 🚀 Clear rama table cache
         if hasattr(self, '_rama_tables_cache'):
             self._rama_tables_cache.clear()
@@ -174,25 +207,32 @@ class GeoMetric:
     def _compute_sidechain_torsions_parallel(self) -> None:
         device = self.atom_pos.device
         tors = torch.zeros((self.prot_len, 7, 2), device=device, dtype=self.atom_pos.dtype)
-        batch_coords = []
-        batch_indices = []  # [(res_idx, chi_idx)]
-        for i in range(self.prot_len):
-            aa_idx = int(self.prot.aatype[i]) if isinstance(self.prot.aatype, (torch.Tensor, np.ndarray)) else int(self.prot.aatype[i])
-            chi_indices = self._chi_atoms_cache.get(aa_idx, [])
-            for chi_idx, idxs in chi_indices:
-                idxs_tensor = torch.tensor(idxs, device=self.atom_pos.device, dtype=torch.long)
-                atoms = self.atom_pos[i, idxs_tensor]
-                if torch.any(atoms == 0): 
-                    continue
-                batch_coords.append(atoms)
-                batch_indices.append((i, chi_idx))
-        if batch_coords:
-            coords = torch.stack(batch_coords, dim=0)   # (B, 4, 3) 
-            angles = calc_dihedral_batch(coords)                   # (B,)
+        if self._chi_gather_cache is None:
+            residue_indices = []
+            chi_indices = []
+            atom_indices = []
+            aa_types = self.prot.aatype.detach().cpu().tolist()
+            for residue_idx, aa_idx in enumerate(aa_types):
+                for chi_idx, indices in self._chi_atoms_cache.get(int(aa_idx), []):
+                    residue_indices.append(residue_idx)
+                    chi_indices.append(chi_idx)
+                    atom_indices.append(indices)
+            self._chi_gather_cache = (
+                torch.tensor(residue_indices, device=device, dtype=torch.long),
+                torch.tensor(chi_indices, device=device, dtype=torch.long),
+                torch.tensor(atom_indices, device=device, dtype=torch.long),
+            )
+
+        residue_indices, chi_indices, atom_indices = self._chi_gather_cache
+        if residue_indices.numel():
+            coords = self.atom_pos[residue_indices.unsqueeze(1), atom_indices]
+            valid = ~torch.any(coords == 0, dim=(1, 2))
+            valid_residues = residue_indices[valid]
+            valid_chis = chi_indices[valid]
+            angles = calc_dihedral_batch(coords[valid])
             sin, cos = torch.sin(angles), torch.cos(angles)
-            for (res_idx, chi_idx), s, c in zip(batch_indices, sin, cos):
-                tors[res_idx, 3 + chi_idx, 0] = s
-                tors[res_idx, 3 + chi_idx, 1] = c
+            tors[valid_residues, 3 + valid_chis, 0] = sin
+            tors[valid_residues, 3 + valid_chis, 1] = cos
         # attach to prot-like object
         self.prot.torsion_angles_sin_cos = tors
         if not self.prot.torsion_angles_sin_cos.requires_grad:
@@ -224,11 +264,18 @@ class GeoMetric:
             chis_sel = chis_sel[:, :actual_dims]
             num_chis = actual_dims
         
-        minVal = torch.tensor(ndt.minVal[:num_chis], device=device, dtype=torch.float32)
-        wBin = torch.tensor(ndt.wBin[:num_chis], device=device, dtype=torch.float32)
-        nBins = torch.tensor(ndt.nBins[:num_chis], device=device, dtype=torch.long)
+        table_cache_key = (resname, num_chis, str(device))
+        table_tensors = self._rotamer_table_device_cache.get(table_cache_key)
+        if table_tensors is None:
+            table_tensors = (
+                torch.tensor(ndt.minVal[:num_chis], device=device, dtype=torch.float32),
+                torch.tensor(ndt.wBin[:num_chis], device=device, dtype=torch.float32),
+                torch.tensor(ndt.nBins[:num_chis], device=device, dtype=torch.long),
+                ndt.lookupTable.detach().to(device=device, dtype=torch.float32),
+            )
+            self._rotamer_table_device_cache[table_cache_key] = table_tensors
+        minVal, wBin, nBins, lookup_table = table_tensors
         doWrap = list(ndt.doWrap[:num_chis])  # Keep as list for wrapping logic
-        lookup_table = ndt.lookupTable.clone().detach().to(device=device, dtype=torch.float32)
         
         # Apply symmetry for ASP, GLU, PHE, TYR (last chi angle mod 180)
         chis_normalized = chis_sel.clone()
@@ -366,11 +413,12 @@ class GeoMetric:
         self.phi_psi = phi_psi_deg
         self.phi_psi.requires_grad_(True)
         self._compute_sidechain_torsions_parallel()
-        try:
-            self.seq = _build_seq_torch_vectorized(self.prot.aatype)
-        except (IndexError, RuntimeError):
-            # Fallback to standard vectorized method if error
-            self.seq = _build_seq_vectorized(self.prot.aatype)
+        if self.seq is None:
+            try:
+                self.seq = _build_seq_torch_vectorized(self.prot.aatype)
+            except (IndexError, RuntimeError):
+                # Fallback to standard vectorized method if error
+                self.seq = _build_seq_vectorized(self.prot.aatype)
 
         assert len(self.seq) == self.prot_len
 
@@ -443,7 +491,13 @@ class GeoMetric:
         phi_psi: [N, 2] tensor, unit=degree
         type_id: rama type ID
         """
-        table_torch = self._rama_tables_cache[type_id].to(phi_psi.device, dtype=phi_psi.dtype)
+        table_cache_key = (type_id, str(phi_psi.device), phi_psi.dtype)
+        table_torch = self._rama_table_device_cache.get(table_cache_key)
+        if table_torch is None:
+            table_torch = self._rama_tables_cache[type_id].to(
+                phi_psi.device, dtype=phi_psi.dtype
+            )
+            self._rama_table_device_cache[table_cache_key] = table_torch
         limits = self._rama_limits_cache[type_id]
         
         phi_min, phi_max, psi_min, psi_max = limits
@@ -542,9 +596,8 @@ class GeoMetric:
         torch.Tensor, shape [n_residues], dtype=int
             0 = loop/coil, 1 = helix (alpha/3_10/pi), 2 = sheet (beta strand)
         """
-        result = detect_secondary_structure(structure_path, mode="detect", detect_nucleic=False)
-
         st = read_structure(structure_path)
+        helices, sheets = detect_protein_secondary_structure(st, include_single_strands=False)
         residue_list: list[tuple[str, int]] = []
         for _model_idx, chain_name, residues in iter_chain_residues(st):
             for res in residues:
@@ -553,14 +606,14 @@ class GeoMetric:
         n_residues = len(residue_list)
         ss_types_res = torch.zeros(n_residues, dtype=torch.int)
 
-        for h in result.helices:
+        for h in helices:
             cid = h.start.chain
             s, e = h.start.resseq, h.end.resseq
             for idx, (chain_id, resseq) in enumerate(residue_list):
                 if chain_id == cid and s <= resseq <= e:
                     ss_types_res[idx] = 1
 
-        for sh in result.sheets:
+        for sh in sheets:
             for strand in sh.strands:
                 cid = strand.start.chain
                 s, e = strand.start.resseq, strand.end.resseq
@@ -575,38 +628,10 @@ class GeoMetric:
         # Get basic information
         # aa_type = torch.clamp(self.prot.aatype, 0, 19).clone().detach().to(dtype=int)
         aa_type = self.prot.aatype.clone().detach().to(dtype=int)
-        atom_mask = self.prot.atom14_mask.clone().detach()
         device = self.phi_psi.device
-        atom2res = self.prot.atom14_mask.nonzero()[0].clone().detach()
         ss_types_res = self.get_secondary_structure_labels(output_path).to(device)
-        # z_scores=torch.zeros(self.prot_len-2,dtype=float,requires_grad=True)
-        means=torch.zeros((3,22),dtype=float)
-        stds=torch.zeros((3,22),dtype=float)
-
-        def _get_mean(ss_type, resname):
-            reg_sum = 0
-            sq_sum = 0
-            for i in db[ss_type][resname]:
-                for j in i:
-                    reg_sum += j
-                    sq_sum += j * j
-            if reg_sum > 0:
-                mean = sq_sum / reg_sum
-            else:
-                mean = 0
-            return mean
-
-        def _get_std(ss_type, resname, mean):
-            ch, zn = 0, 0
-            for i in db[ss_type][resname]:
-                for j in i:
-                    ch += j * (j - mean) ** 2
-                    zn += j
-            zn -= 1
-            if zn == 0:
-                return 0
-            std = math.sqrt(ch / zn)
-            return std
+        means = self._ramaz_weighted_means
+        stds = self._ramaz_weighted_stds
         
         def _get_resname(rama_type, resname):
             rn = resname
@@ -620,33 +645,42 @@ class GeoMetric:
                 rn = "prePRO"
             return rn
 
-        for i in range(len(SS_TYPE)):
-            for j in range(len(RAMA_RESNAME)):
-                mean=_get_mean(SS_TYPE[i],RAMA_RESNAME[j])
-                means[i][j]=mean
-                stds[i][j]=_get_std(SS_TYPE[i],RAMA_RESNAME[j],mean)
-
         rama_types=self.get_rama_types()
 
         vmin=-178
         step=4
         int_zsc=torch.zeros(self.prot_len-2,dtype=float,device=self.phi_psi.device)
         phi_psi_angles=self.phi_psi
-        for idx in range(0,self.prot_len-2):
-            if aa_type[idx+1] >= 20:
-                int_zsc[idx]=torch.tensor(0.0, device=int_zsc.device, dtype=int_zsc.dtype)
+        # Transfer values used only for Python control flow in bulk. Per-value
+        # .item() calls serialize the GPU hundreds of times for every crop.
+        phi_psi_control = phi_psi_angles.detach().cpu().tolist()
+        aa_type_control = aa_type.detach().cpu().tolist()
+        rama_type_control = rama_types.detach().cpu().tolist()
+        ss_type_control = ss_types_res.detach().cpu().tolist()
+        valid_indices = []
+        x1_values = []
+        y1_values = []
+        x2_values = []
+        y2_values = []
+        v1_values = []
+        v2_values = []
+        v3_values = []
+        v4_values = []
+        mean_values = []
+        std_values = []
+        for idx in range(self.prot_len - 2):
+            if aa_type_control[idx + 1] >= 20:
                 continue
-            # phi,psi=float(phi_psi_angles[idx][0]),float(phi_psi_angles[idx][1])
-            phi, psi = phi_psi_angles[idx][0].item(), phi_psi_angles[idx][1].item()
-            phi_psi=phi_psi_angles[idx]
-            rama_type=rama_types[idx]
-            resname=index_to_restype_3[aa_type[idx+1]]
-            ss=ss_types_res[idx+1]
-            ss=SS_TYPE[ss]
-            '''get_z_score_point'''
-            resname=_get_resname(int(rama_type),resname)
-            if resname=="cisPRO": ss="L"
-            table=db[ss][resname]
+
+            phi, psi = phi_psi_control[idx]
+            phi_psi = phi_psi_angles[idx]
+            resname = index_to_restype_3[aa_type_control[idx + 1]]
+            ss = SS_TYPE[ss_type_control[idx + 1]]
+            resname = _get_resname(rama_type_control[idx], resname)
+            if resname == "cisPRO":
+                ss = "L"
+            table = db[ss][resname]
+
             if phi < -178:
                 i = -1
                 x1 = -182
@@ -656,11 +690,9 @@ class GeoMetric:
                 x1 = 178
                 x2 = 182
             else:
-                i = int(abs(-178 - phi) // 4)
-                nsteps = abs(vmin - phi) // step
-                x1 = vmin + nsteps * step
+                i = int(abs(-178 - phi) // step)
+                x1 = vmin + abs(vmin - phi) // step * step
                 x2 = x1 + 4
-
             if psi < -178:
                 j = -1
                 y1 = -182
@@ -670,34 +702,53 @@ class GeoMetric:
                 y1 = 178
                 y2 = 182
             else:
-                j = int(abs(-178 - psi) // 4)
-                nsteps = abs(vmin - psi) // step
-                y1 = vmin + nsteps * step
+                j = int(abs(-178 - psi) // step)
+                y1 = vmin + abs(vmin - psi) // step * step
                 y2 = y1 + 4
 
-            xx = phi
-            yy = psi
-            # Get table dimensions to prevent index out of bounds
             table_nrows = len(table)
             table_ncols = len(table[0]) if table_nrows > 0 else 0
-            
-            # Clamp indices to valid range to prevent out-of-bounds access
-            # When i = -1 (phi < -178), map to 0; when i is at max, clamp to max-2
-            # This ensures i+1 is always within bounds
-            i_safe = max(0, min(i, table_nrows - 2))  # Clamp to max-2 so i+1 is valid
-            j_safe = max(0, min(j, table_ncols - 2))   # Clamp to max-2 so j+1 is valid
-            i1_safe = i_safe + 1
-            j1_safe = j_safe + 1
-            
+            i_safe = max(0, min(i, table_nrows - 2))
+            j_safe = max(0, min(j, table_ncols - 2))
             v1 = table[i_safe][j_safe]
-            v2 = table[i1_safe][j1_safe]
-            v3 = table[i_safe][j1_safe]
-            v4 = table[i1_safe][j_safe]
-            zsc=interpolate_2d(x1, y1, x2, y2, v1, v2, v3, v4, phi_psi)
-            ss_idx=ss2idx[ss]
-            res_idx=rama_res2idx[resname]
-            zsc=(zsc-means[ss_idx][res_idx])/stds[ss_idx][res_idx]
-            int_zsc[idx]=zsc
+            v2 = table[i_safe + 1][j_safe + 1]
+            v3 = table[i_safe][j_safe + 1]
+            v4 = table[i_safe + 1][j_safe]
+            ss_idx = ss2idx[ss]
+            res_idx = rama_res2idx[resname]
+            valid_indices.append(idx)
+            x1_values.append(x1)
+            y1_values.append(y1)
+            x2_values.append(x2)
+            y2_values.append(y2)
+            v1_values.append(v1)
+            v2_values.append(v2)
+            v3_values.append(v3)
+            v4_values.append(v4)
+            mean_values.append(float(means[ss_idx][res_idx]))
+            std_values.append(float(stds[ss_idx][res_idx]))
+
+        if valid_indices:
+            value_dtype = phi_psi_angles.dtype
+            valid_indices_tensor = torch.tensor(valid_indices, device=device, dtype=torch.long)
+
+            def values_tensor(values):
+                return torch.tensor(values, device=device, dtype=value_dtype)
+
+            phi_psi = phi_psi_angles[valid_indices_tensor]
+            x1 = values_tensor(x1_values)
+            y1 = values_tensor(y1_values)
+            x2 = values_tensor(x2_values)
+            y2 = values_tensor(y2_values)
+            v1 = values_tensor(v1_values)
+            v2 = values_tensor(v2_values)
+            v3 = values_tensor(v3_values)
+            v4 = values_tensor(v4_values)
+            v14 = v1 + (v4 - v1) * (phi_psi[:, 0] - x1) / (x2 - x1)
+            v32 = v3 + (v2 - v3) * (phi_psi[:, 0] - x1) / (x2 - x1)
+            zsc = v14 + (v32 - v14) * (phi_psi[:, 1] - y1) / (y2 - y1)
+            zsc = (zsc - values_tensor(mean_values)) / values_tensor(std_values)
+            int_zsc[valid_indices_tensor] = zsc.to(int_zsc.dtype)
         int_zsc.requires_grad_(True)
         ss_types_res=ss_types_res[1:-1]
         helix_zscores=int_zsc[ss_types_res==1]
@@ -1171,6 +1222,7 @@ class GeoMetric:
                 self._rmsd_cache_key = cache_key
                 self._rmsd_failed_cache_keys.discard(cache_key)
                 self._energies_sites_cache = energies_sites
+                self._rmsd_device_tensor_cache.clear()
                 # ==========================
                 # 🚀 Build tensorized proxy cache
                 # ==========================
@@ -1269,27 +1321,41 @@ class GeoMetric:
             energies_sites = self._energies_sites_cache
             
             # print(f"🚀 Using cached GRM and atom mapping (key: {cache_key})")
-        # Move perm_tensor to target device
-        perm_tensor = perm_tensor_cpu.to(pred_coords_unpad_tensor.device)
+        device = pred_coords_unpad_tensor.device
+        device_cache_key = (cache_key, str(device))
+        device_tensors = self._rmsd_device_tensor_cache.get(device_cache_key)
+        if device_tensors is None:
+            device_tensors = {
+                "perm": perm_tensor_cpu.to(device),
+                "bond_i": self._bond_i_cpu.to(device),
+                "bond_j": self._bond_j_cpu.to(device),
+                "bond_ideal": self._bond_ideal_cpu.to(device),
+                "angle_i": self._angle_i_cpu.to(device),
+                "angle_j": self._angle_j_cpu.to(device),
+                "angle_k": self._angle_k_cpu.to(device),
+                "angle_ideal": self._angle_ideal_cpu.to(device),
+                "nb_i": self._nb_i_cpu.to(device),
+                "nb_j": self._nb_j_cpu.to(device),
+                "nb_vdw": self._nb_vdw_cpu.to(device),
+            }
+            self._rmsd_device_tensor_cache[device_cache_key] = device_tensors
+        perm_tensor = device_tensors["perm"]
         pred_coords_aligned = pred_coords_unpad_tensor[perm_tensor]
         # Upgrade precision to float64 to reduce numerical errors
         pred_coords_aligned_f64 = pred_coords_aligned.to(dtype=torch.float64)
         # ============================================================
         # 🚀 Load cached proxy tensors to device (same as coords)
         # ============================================================
-        device = pred_coords_unpad_tensor.device
-
-        bond_i = self._bond_i_cpu.to(device)
-        bond_j = self._bond_j_cpu.to(device)
-        bond_ideal = self._bond_ideal_cpu.to(device)
-
-        angle_i = self._angle_i_cpu.to(device)
-        angle_j = self._angle_j_cpu.to(device)
-        angle_k = self._angle_k_cpu.to(device)
-        angle_ideal = self._angle_ideal_cpu.to(device)
-        nb_i = self._nb_i_cpu.to(device)
-        nb_j = self._nb_j_cpu.to(device)
-        nb_vdw = self._nb_vdw_cpu.to(device)
+        bond_i = device_tensors["bond_i"]
+        bond_j = device_tensors["bond_j"]
+        bond_ideal = device_tensors["bond_ideal"]
+        angle_i = device_tensors["angle_i"]
+        angle_j = device_tensors["angle_j"]
+        angle_k = device_tensors["angle_k"]
+        angle_ideal = device_tensors["angle_ideal"]
+        nb_i = device_tensors["nb_i"]
+        nb_j = device_tensors["nb_j"]
+        nb_vdw = device_tensors["nb_vdw"]
                 # ============================================================
         # 🚀 Vectorized bond RMSD (same logic as original)
         # ============================================================

@@ -18,7 +18,8 @@ if [ ! -d "$out_dir" ]; then
     mkdir -p "$out_dir"
 fi  
 
-max_tokens=1000
+# V100 32 GB default; override for other GPUs or unusually large residues.
+max_tokens=${CRYONET_REFINE_MAX_TOKENS:-1200}
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Set PYTHONPATH to include project root so CryoNetRefine package can be found
@@ -54,4 +55,3 @@ CUDA_VISIBLE_DEVICES=0 python main.py \
     # --validate_output
 
 echo "CryoNet.Refine refinement completed!"
-
