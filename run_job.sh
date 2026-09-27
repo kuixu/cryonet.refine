@@ -51,7 +51,8 @@ date >$log;
 #     mkdir -p $out_dir
 # fi  
 
-max_tokens=${CRYONET_REFINE_MAX_TOKENS:-1000}
+# V100 32 GB default; override for other GPUs or unusually large residues.
+max_tokens=${CRYONET_REFINE_MAX_TOKENS:-1200}
 recycles=${CRYONET_REFINE_RECYCLES:-$status_recycles}
 restraint_flags=()
 if [ -f "$restraints_file" ]; then

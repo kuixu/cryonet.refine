@@ -85,7 +85,9 @@ class Engine:
         self.crop_first_override_method = None
         self.crop_first_seed = 42
         self.crop_batch_cache = {}
+        self.crop_batch_device_cache = {}
         self.crop_feature_cache = {}
+        self.global_template_coords_cache = None
         self._use_global_clash_this_run = self.refine_args.use_global_clash
         self.user_restraints: ResolvedUserRestraints | None = None
         self.global_atom_lookup: dict[int, str] | None = None
@@ -219,7 +221,9 @@ class Engine:
         self.crop_first_featurizer = featurizer if featurizer is not None else BoltzFeaturizer()
         # Cache keys are crop-local, so caches must never survive a record change.
         self.crop_batch_cache.clear()
+        self.crop_batch_device_cache.clear()
         self.crop_feature_cache.clear()
+        self.global_template_coords_cache = None
         if hasattr(self, "crop_atom_types_cache"):
             self.crop_atom_types_cache.clear()
 
@@ -290,7 +294,7 @@ class Engine:
             else:
                 batched[key] = value
         return batched
-   
+
 
     def refine_step_with_molecule_aware_cropping(self, batch, target_density=None, iteration=0, data_dir=None, out_dir=None):
         """Perform one refinement step with molecule-type-aware cropping."""
@@ -308,11 +312,14 @@ class Engine:
         self.optimizer.zero_grad(set_to_none=True)
         total_loss_value = 0.0
         
-        # Process each molecule-aware crop sequentially.
-        # Keep the aggregated refined_coords on CPU to save GPU memory;
-        # only the current crop will live on GPU.
-        refined_coords = torch.zeros_like(batch["template_coords"].squeeze(0))
-        self.final_global_refined_coords = batch["template_coords"].squeeze(0).clone().to(self.device)  # [1, N, 3]
+        # Process each molecule-aware crop sequentially. Keep static crop inputs
+        # and the aggregate coordinates on GPU across recycles.
+        if self.global_template_coords_cache is None:
+            self.global_template_coords_cache = (
+                batch["template_coords"].squeeze(0).to(self.device).detach()
+            )
+        refined_coords = torch.zeros_like(self.global_template_coords_cache)
+        self.final_global_refined_coords = self.global_template_coords_cache.clone()
 
         loss_dict_list = []
         time_loss_dict_list = []
@@ -328,11 +335,17 @@ class Engine:
                 crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
                     batch, crop_info
                 )
-            for k, v in list(crop_batch.items()):
-                if isinstance(v, torch.Tensor):
-                    crop_batch[k] = v.to(self.device, non_blocking=True)
-            if isinstance(crop_atom_mask, torch.Tensor):
+            device_cached = self.crop_batch_device_cache.get(crop_idx_info)
+            if device_cached is None:
+                crop_batch = {
+                    k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+                    for k, v in crop_batch.items()
+                }
                 crop_atom_mask = crop_atom_mask.to(self.device)
+                self.crop_batch_device_cache[crop_idx_info] = (crop_batch, crop_atom_mask)
+            else:
+                crop_batch, crop_atom_mask = device_cached
+            crop_batch = dict(crop_batch)
             
             # Run refinement step on crop
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
@@ -346,7 +359,6 @@ class Engine:
             refined_coords[crop_atom_mask.unsqueeze(0)] = (
                 crop_predicted_coords[crop_batch['atom_pad_mask']]
                 .detach()
-                .cpu()
             )
             
             # Accumulate loss (average across crops)
@@ -669,11 +681,13 @@ class Engine:
                     "token_trans_bias": token_trans_bias,
                 }
                 cache_data = {
-                    's': s.detach().cpu(), 
-                    'z': z.detach().cpu(),
-                    'diffusion_conditioning': {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v 
-                                                for k, v in diffusion_conditioning.items()},
-                    's_inputs': s_inputs.detach().cpu()
+                    's': s.detach(),
+                    'z': z.detach(),
+                    'diffusion_conditioning': {
+                        k: v.detach() if isinstance(v, torch.Tensor) else v
+                        for k, v in diffusion_conditioning.items()
+                    },
+                    's_inputs': s_inputs.detach(),
                 }
                 self.crop_feature_cache[cache_key] = cache_data
         
