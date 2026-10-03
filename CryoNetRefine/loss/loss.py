@@ -338,7 +338,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
         # write_refined_structure_pdb_by_crop(predicted_coords, feats, data_dir, output_path)
     else:
         output_path = data_dir_str + f"/{record_id}_temp.cif"
-        write_refined_structure_cif(predicted_coords, feats, data_dir, output_path)
+        write_refined_structure_cif(feats, predicted_coords, data_dir, output_path)
         # write_refined_structure_pdb(predicted_coords, feats, data_dir, output_path)
     if not is_nucleic_acid:
         if geometric_adapter is None:
