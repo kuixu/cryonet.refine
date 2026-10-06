@@ -131,6 +131,24 @@ def probe_style_clash_loss(
     else:
         amp_dtype = torch.float16
 
+    # Residue indices are chain-local. Map both residue and chain IDs through
+    # the same trimmed atom-to-token indices before excluding sequence neighbors.
+    atom_res_idx = atom_chain_idx = None
+    token_idx = None
+    if "residue_index" in feats:
+        if "atom_to_token" in feats:
+            att = feats["atom_to_token"].to(device)
+            token_idx = att[:, :L, :].argmax(dim=-1)[:, valid_idx]
+        elif "atom_token_index" in feats:
+            token_idx = feats["atom_token_index"].to(device).long()[:, :L][:, valid_idx]
+        if token_idx is not None:
+            if "asym_id" not in feats:
+                raise ValueError("asym_id is required for chain-aware clash neighbor exclusion")
+            residue_index = feats["residue_index"].to(device).long()
+            chain_index = feats["asym_id"].to(device).long()
+            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
+            atom_chain_idx = chain_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
+
     # If N is large, process pairwise distances in chunks to save memory
     if N > chunk_size:
         # Batch computation to avoid allocating a [1, N, N] matrix in memory at once.
@@ -138,21 +156,6 @@ def probe_style_clash_loss(
         # large intermediates for every (i,j) block (which otherwise accumulates to OOM).
         soft_n_clashes = torch.tensor(0.0, device=device, requires_grad=True)
         
-        # Precompute atom-to-residue indices for neighbor masking.
-        if "atom_to_token" in feats and "residue_index" in feats:
-            att = feats["atom_to_token"].to(device)  # [1, N_pad, Ltok], keep long
-            token_idx = att[:, :L, :].argmax(dim=-1)  # [1, L] token index per atom
-            token_idx = token_idx[:, valid_idx]  # [1, N_valid]
-            residue_index = feats["residue_index"].to(device)  # [1, Ltok]
-            # residue_index[0, k] = residue id of token k; gather by token_idx -> [1, N_valid]
-            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)  # [1, N_valid]
-        elif "atom_token_index" in feats and "residue_index" in feats:
-            token_idx = feats["atom_token_index"].to(device).long()[:, :L][:, valid_idx]  # [1, N_valid]
-            residue_index = feats["residue_index"].to(device).long()  # [1, Ltok]
-            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
-        else:
-            atom_res_idx = None
-
         def _clash_block_sum(
             coords_i: torch.Tensor,
             coords_j: torch.Tensor,
@@ -183,6 +186,8 @@ def probe_style_clash_loss(
             atom_vdw_j: torch.Tensor,
             atom_res_i: torch.Tensor,
             atom_res_j: torch.Tensor,
+            atom_chain_i: torch.Tensor,
+            atom_chain_j: torch.Tensor,
             diag_flag: torch.Tensor,
         ) -> torch.Tensor:
             # atom_res_*: [1, ci/cj]
@@ -193,9 +198,10 @@ def probe_style_clash_loss(
                 x = gap - clash_cutoff
                 prob = torch.sigmoid(-softness * x)  # [1, ci, cj]
 
-                # Exclude pairs from neighboring residues (bonded / near-bonded)
+                # Only same-chain sequence neighbors are excluded.
                 res_diff = atom_res_i.unsqueeze(2) - atom_res_j.unsqueeze(1)  # [1, ci, cj]
-                neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+                same_chain = atom_chain_i.unsqueeze(2) == atom_chain_j.unsqueeze(1)
+                neighbor_mask = same_chain & (torch.abs(res_diff) <= float(exclude_neighbor_distance))
                 prob = prob * (~neighbor_mask).to(prob.dtype)
 
                 if diag_flag.item() == 1:
@@ -231,6 +237,8 @@ def probe_style_clash_loss(
                         atom_vdw_j,
                         atom_res_i,
                         atom_res_j,
+                        atom_chain_idx[:, i:end_i],
+                        atom_chain_idx[:, j:end_j],
                         diag_flag,
                         use_reentrant=False,
                     )
@@ -270,23 +278,11 @@ def probe_style_clash_loss(
         pair_mask = pair_mask & (~eye)
         del eye
 
-        # Exclude neighbor atoms if possible (same lightweight atom_res_idx as chunk branch)
-        if "atom_to_token" in feats and "residue_index" in feats:
-            att = feats["atom_to_token"].to(device)
-            token_idx = att[:, :L, :].argmax(dim=-1)[:, valid_idx]  # [1, N_valid]
-            residue_index = feats["residue_index"].to(device)
-            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
+        # Use the same chain-aware exclusion as the chunked path.
+        if atom_res_idx is not None:
             res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [1, N, N]
-            neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
-            del res_diff, atom_res_idx
-            pair_mask = pair_mask & (~neighbor_mask.bool())
-            del neighbor_mask
-        elif "atom_token_index" in feats and "residue_index" in feats:
-            token_idx = feats["atom_token_index"].to(device).long()[:, :L][:, valid_idx]
-            residue_index = feats["residue_index"].to(device).long()
-            atom_res_idx = residue_index.squeeze(0).gather(0, token_idx.squeeze(0)).unsqueeze(0)
-            res_diff = atom_res_idx.unsqueeze(2) - atom_res_idx.unsqueeze(1)  # [1, N, N]
-            neighbor_mask = torch.abs(res_diff) <= float(exclude_neighbor_distance)
+            same_chain = atom_chain_idx.unsqueeze(2) == atom_chain_idx.unsqueeze(1)
+            neighbor_mask = same_chain & (torch.abs(res_diff) <= float(exclude_neighbor_distance))
             del res_diff, atom_res_idx
             pair_mask = pair_mask & (~neighbor_mask.bool())
             del neighbor_mask
