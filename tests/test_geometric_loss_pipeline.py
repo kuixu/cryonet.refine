@@ -54,6 +54,7 @@ def _synthetic_peptide(tmp_path, cropped):
         "atom_to_token": F.one_hot(torch.tensor(token_indices), 4).unsqueeze(0),
         "res_type": F.one_hot(torch.full((1, 4), const.token_ids["LEU"]), len(const.tokens)),
         "residue_index": torch.arange(4).unsqueeze(0),
+        "asym_id": torch.zeros(1, 4, dtype=torch.long),
         "ref_element": torch.tensor([[7 if a[0] == "N" else 8 if a[0] == "O" else 6 for a in atoms]]),
         "is_cropped": cropped, "crop_type": "molecule_aware",
         "global_atom_indices": torch.arange(n),

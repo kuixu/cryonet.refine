@@ -233,6 +233,7 @@ def build_lightweight_global_batch(case) -> dict:
         "atom_resolved_mask": atom_present,
         "template_atom_present_mask": atom_present.unsqueeze(1),
         "residue_index": residue_index.long(),
+        "asym_id": torch.from_numpy(tokens["asym_id"].astype(np.int64)).unsqueeze(0),
         "atom_token_index": atom_token_index.long(),
         "ref_element": ref_element.long(),
     }
