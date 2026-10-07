@@ -687,7 +687,7 @@ def parse_vc(ccfile, per_chain_cc=False):
         "rama_z_helix":rama_z_helix, 
         "rama_z_sheet":rama_z_sheet, 
         "rama_z_loop":rama_z_loop,
-        "molprobity_score": molprobity_score,  # 添加到返回字典
+        "molprobity_score": molprobity_score,  # Include in the returned dictionary.
         "emringer_score": emringer_score,
         "cablam_outliers": cablam_outliers,
         **rna_metrics,

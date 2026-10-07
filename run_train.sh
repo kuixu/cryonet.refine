@@ -1,4 +1,4 @@
-# 修改 srun 命令，直接启动 torchrun
+# Launch torchrun directly through srun.
 srun \
   -p priority \
   -J CryoNet.Refine \
