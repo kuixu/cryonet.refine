@@ -18,8 +18,9 @@ from typing import Callable
 
 
 DEFAULT_ASSET_BASE_URLS = (
-    "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine",
+    "https://zenodo.org/records/23184057/files",
     "https://huggingface.co/FuyaoHuang/cryonet-refine-assets/resolve/main",
+    "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine",
 )
 DEFAULT_MOLS_URLS = (
     "https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/mols.tar",
