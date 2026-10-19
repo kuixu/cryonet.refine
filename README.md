@@ -32,12 +32,12 @@
 
 ### Model Architecture
 <div align="center">
-  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine_framework.png" alt="CryoNet.Refine Framework" width="90%">
+  <img src="docs/images/cryonet.refine_framework.png" alt="CryoNet.Refine Framework" width="90%">
 </div>
 
 ### Refinement Process
 <div align="center">
-  <img src="https://cryonet.oss-cn-beijing.aliyuncs.com/cryonet.refine/cryonet.refine.gif" alt="Refinement Process" width="90%">
+  <img src="docs/images/cryonet.refine.gif" alt="Refinement Process" width="90%">
 </div>
 
 ---
