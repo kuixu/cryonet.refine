@@ -170,3 +170,4 @@ molprobity.out
 output
 CryoNetRefine/data/mols.tar
 CryoNetRefine/data/mols
+run_job3.sh

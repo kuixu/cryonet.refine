@@ -9,6 +9,7 @@ import re
 from collections.abc import Iterator
 from typing import Optional
 
+import gemmi
 import ihm
 import modelcif
 from modelcif import Assembly, AsymUnit, Entity, System, dumper
@@ -352,6 +353,47 @@ def _entity_key(structure, chain):
     return (seq, chain["mol_type"])
 
 
+def _chain_identifiers(chain, chain_fields, label_id_map):
+    long_id = str(chain["name"])
+    label_id = label_id_map.get(long_id, long_id)
+    if "auth_asym_id" in chain_fields:
+        auth_id = str(chain["auth_asym_id"]).strip() or long_id
+    else:
+        auth_id = long_id
+    return label_id, auth_id
+
+
+def _polymer_sequence_codes(sequence, mol_type):
+    protein_standard = {
+        "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+        "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+        "SEC", "PYL",
+    }
+    mt = int(mol_type)
+    raw_codes = []
+    canonical_codes = []
+
+    for monomer in sequence:
+        comp_id = str(monomer).strip().upper()
+        residue_info = gemmi.find_tabulated_residue(comp_id)
+        canonical = str(residue_info.one_letter_code).strip().upper()
+
+        if mt == int(const.chain_type_ids["PROTEIN"]):
+            raw = canonical if comp_id in protein_standard and canonical else f"({comp_id})"
+            canonical = canonical or "X"
+        elif mt == int(const.chain_type_ids["DNA"]):
+            raw = f"({comp_id})"
+            canonical = canonical or "N"
+        else:
+            raw = canonical if len(comp_id) == 1 and canonical else f"({comp_id})"
+            canonical = canonical or "N"
+
+        raw_codes.append(raw)
+        canonical_codes.append(canonical)
+
+    return "".join(raw_codes), "".join(canonical_codes)
+
+
 def _infer_element_symbol(atom_name: str, res_name: str) -> str:
     """
     Infer element symbol from atom name, using the same ambiguous atom mapping
@@ -408,14 +450,22 @@ def to_mmcif(
             entity_map[key] = entity_id_counter
             entity_id_counter += 1
 
-    label_to_auth = _build_chain_id_maps(structure.chains)
+    label_id_map = _build_chain_id_maps(structure.chains)
     chain_fields = set(structure.chains.dtype.names or [])
     residue_fields = set(structure.residues.dtype.names or [])
 
     label_to_entity_id: dict[str, int] = {}
+    chain_rows: list[tuple[str, str, int]] = []
+    entity_to_auth_ids: dict[int, list[str]] = {}
     for chain in structure.chains:
         long_id = str(chain["name"])
-        label_to_entity_id[long_id] = int(entity_map[_entity_key(structure, chain)])
+        ent_id = int(entity_map[_entity_key(structure, chain)])
+        label_id, auth_id = _chain_identifiers(chain, chain_fields, label_id_map)
+        label_to_entity_id[long_id] = ent_id
+        chain_rows.append((label_id, auth_id, ent_id))
+        entity_to_auth_ids.setdefault(ent_id, [])
+        if auth_id not in entity_to_auth_ids[ent_id]:
+            entity_to_auth_ids[ent_id].append(auth_id)
     lines: list[str] = []
     lines.append(f"data_model\n")
     lines.append("_entry.id model\n")
@@ -449,17 +499,36 @@ def to_mmcif(
         lines.append("loop_\n")
         lines.append("_entity_poly.entity_id\n")
         lines.append("_entity_poly.type\n")
-        for ent_id, poly_type, _, _ in polymer_rows:
-            lines.append(f"{ent_id} {poly_type}\n")
+        lines.append("_entity_poly.nstd_linkage\n")
+        lines.append("_entity_poly.nstd_monomer\n")
+        lines.append("_entity_poly.pdbx_seq_one_letter_code\n")
+        lines.append("_entity_poly.pdbx_seq_one_letter_code_can\n")
+        lines.append("_entity_poly.pdbx_strand_id\n")
+        for ent_id, poly_type, mol_type, seq in polymer_rows:
+            raw_sequence, canonical_sequence = _polymer_sequence_codes(seq, mol_type)
+            strand_ids = ",".join(entity_to_auth_ids[ent_id])
+            lines.append(
+                f"{ent_id} {poly_type} no no {_token(raw_sequence)} "
+                f"{_token(canonical_sequence)} {_token(strand_ids)}\n"
+            )
         lines.append("\n")
         lines.append("loop_\n")
         lines.append("_entity_poly_seq.entity_id\n")
         lines.append("_entity_poly_seq.num\n")
         lines.append("_entity_poly_seq.mon_id\n")
+        lines.append("_entity_poly_seq.hetero\n")
         for ent_id, _, _, seq in polymer_rows:
             for i, mon in enumerate(seq, start=1):
-                lines.append(f"{ent_id} {i} {str(mon)[:3]}\n")
+                lines.append(f"{ent_id} {i} {str(mon)[:3]} n\n")
         lines.append("\n")
+
+    lines.append("loop_\n")
+    lines.append("_struct_asym.id\n")
+    lines.append("_struct_asym.entity_id\n")
+    lines.append("_struct_asym.details\n")
+    for label_id, _, ent_id in chain_rows:
+        lines.append(f"{_token(label_id)} {ent_id} ?\n")
+    lines.append("\n")
 
     tags = [
         "_atom_site.group_PDB",
@@ -491,11 +560,7 @@ def to_mmcif(
     atom_lookup: dict[tuple[str, str, str, str], int] = {}
     for chain in structure.chains:
         long_id = str(chain["name"])
-        if "auth_asym_id" in chain_fields:
-            auth_id = str(chain["auth_asym_id"]).strip() or long_id
-        else:
-            auth_id = label_to_auth.get(long_id, long_id[:2])
-        label_id = auth_id
+        label_id, auth_id = _chain_identifiers(chain, chain_fields, label_id_map)
         ent_id = label_to_entity_id.get(long_id, 1)
 
         is_nonpoly = int(chain["mol_type"]) == int(const.chain_type_ids["NONPOLYMER"])
@@ -519,9 +584,7 @@ def to_mmcif(
             if "auth_comp_id" in residue_fields:
                 auth_comp_id = str(residue["auth_comp_id"]).strip() or comp_id
             if is_nonpoly:
-                # For ligands/ions, keep label_seq_id aligned with auth numbering
-                # so each ion is represented as a distinct residue in downstream parsers.
-                label_seq_id_token = auth_seq_id
+                label_seq_id_token = "."
             else:
                 label_seq_id_token = str(label_seq_id)
 
@@ -590,8 +653,8 @@ def to_mmcif(
         dist_val = "?"
         if distance is not None and np.isfinite(distance):
             dist_val = f"{float(distance):.3f}"
-        p1_label_seq = m1["auth_seq_id"] 
-        p2_label_seq = m2["auth_seq_id"] 
+        p1_label_seq = m1["label_seq_id"]
+        p2_label_seq = m2["label_seq_id"]
         struct_conn_rows.append(
             [
                 f"{conn_type}{len(struct_conn_rows)+1}",

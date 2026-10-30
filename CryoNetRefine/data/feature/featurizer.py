@@ -44,6 +44,12 @@ def _empty_like_dtype(dtype: np.dtype) -> np.ndarray:
     return np.array([], dtype=dtype)
 
 
+def _copied_long_tensor(values: np.ndarray) -> Tensor:
+    """Copy structured-array fields before handing their storage to Torch."""
+    copied = np.array(values, dtype=np.int64, copy=True, order="C")
+    return from_numpy(copied).long()
+
+
 def build_tokenized_subgraph(
     data: Tokenized,
     crop_token_indices: np.ndarray,
@@ -520,8 +526,8 @@ def process_token_features(  # noqa: C901, PLR0915, PLR0912
 
     # Token core features
     token_index = torch.arange(len(token_data), dtype=torch.long)
-    residue_index = from_numpy(np.ascontiguousarray(token_data["res_idx"])).long()
-    asym_id = from_numpy(np.ascontiguousarray(token_data["asym_id"])).long()
+    residue_index = _copied_long_tensor(token_data["res_idx"])
+    asym_id = _copied_long_tensor(token_data["asym_id"])
     entity_id = from_numpy(token_data["entity_id"].copy()).long()
     sym_id = from_numpy(token_data["sym_id"].copy()).long()
     mol_type = from_numpy(token_data["mol_type"].copy()).long()

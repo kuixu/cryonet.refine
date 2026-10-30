@@ -95,7 +95,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
         
         for mol_type_name, group_data in molecule_groups.items():
             token_indices = group_data['token_indices']
-            sequences = group_data['sequences']
+            group_asym_ids = group_data['asym_ids']
             num_tokens = len(token_indices)
             
             # Simple sliding window: split into chunks of at most crop_size
@@ -124,11 +124,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
                 crop_token_indices = token_indices[start:end]
                 
                 # Extract sequence info for this crop
-                crop_sequences = {}
-                for asym_id, positions in sequences.items():
-                    crop_positions = [p - start for p in positions if start <= p < end]
-                    if crop_positions:
-                        crop_sequences[asym_id] = crop_positions
+                crop_sequences = self._sequences_for_slice(group_asym_ids, start, end)
                 
                 crop_metadata = {
                     'is_complete': (start == 0 and end == num_tokens),
@@ -167,7 +163,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
         global_crop_idx = 0
         for mol_type_name, group_data in molecule_groups.items():
             token_indices = group_data["token_indices"]
-            sequences = group_data["sequences"]
+            group_asym_ids = group_data["asym_ids"]
             num_tokens = len(token_indices)
 
             crop_boundaries = []
@@ -186,11 +182,7 @@ class MoleculeTypeAwareSlidingWindowCropper:
 
             for start, end in crop_boundaries:
                 crop_token_indices = token_indices[start:end]
-                crop_sequences = {}
-                for asym_id, positions in sequences.items():
-                    crop_positions = [p - start for p in positions if start <= p < end]
-                    if crop_positions:
-                        crop_sequences[asym_id] = crop_positions
+                crop_sequences = self._sequences_for_slice(group_asym_ids, start, end)
 
                 atom_chunks = []
                 for tok_i in crop_token_indices.tolist():
@@ -224,6 +216,13 @@ class MoleculeTypeAwareSlidingWindowCropper:
                 global_crop_idx += 1
 
         return plans
+
+    @staticmethod
+    def _sequences_for_slice(asym_ids: List[int], start: int, end: int) -> Dict[int, List[int]]:
+        sequences: Dict[int, List[int]] = {}
+        for local_position, asym_id in enumerate(asym_ids[start:end]):
+            sequences.setdefault(asym_id, []).append(local_position)
+        return sequences
     
     def _group_by_molecule_type(
         self, 
@@ -245,12 +244,14 @@ class MoleculeTypeAwareSlidingWindowCropper:
             if mol_type_name not in molecule_groups:
                 molecule_groups[mol_type_name] = {
                     'token_indices': [],
-                    'sequences': {}  # asym_id -> list of positions within this group
+                    'sequences': {},  # Kept for compatibility with existing callers.
+                    'asym_ids': [],
                 }
             
             group = molecule_groups[mol_type_name]
             pos_in_group = len(group['token_indices'])
             group['token_indices'].append(token_idx.item())
+            group['asym_ids'].append(asym_id_val)
             
             if asym_id_val not in group['sequences']:
                 group['sequences'][asym_id_val] = []

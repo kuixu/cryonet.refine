@@ -85,7 +85,6 @@ class Engine:
         self.crop_first_override_method = None
         self.crop_first_seed = 42
         self.crop_batch_cache = {}
-        self.crop_batch_device_cache = {}
         self.crop_feature_cache = {}
         self.global_template_coords_cache = None
         self._use_global_clash_this_run = self.refine_args.use_global_clash
@@ -221,7 +220,6 @@ class Engine:
         self.crop_first_featurizer = featurizer if featurizer is not None else BoltzFeaturizer()
         # Cache keys are crop-local, so caches must never survive a record change.
         self.crop_batch_cache.clear()
-        self.crop_batch_device_cache.clear()
         self.crop_feature_cache.clear()
         self.global_template_coords_cache = None
         if hasattr(self, "crop_atom_types_cache"):
@@ -335,17 +333,11 @@ class Engine:
                 crop_batch, crop_token_indices, crop_atom_mask = self.molecule_aware_cropper.extract_molecule_aware_crop_from_batch(
                     batch, crop_info
                 )
-            device_cached = self.crop_batch_device_cache.get(crop_idx_info)
-            if device_cached is None:
-                crop_batch = {
-                    k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
-                    for k, v in crop_batch.items()
-                }
-                crop_atom_mask = crop_atom_mask.to(self.device)
-                self.crop_batch_device_cache[crop_idx_info] = (crop_batch, crop_atom_mask)
-            else:
-                crop_batch, crop_atom_mask = device_cached
-            crop_batch = dict(crop_batch)
+            crop_batch = {
+                k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+                for k, v in crop_batch.items()
+            }
+            crop_atom_mask = crop_atom_mask.to(self.device)
             
             # Run refinement step on crop
             crop_loss, crop_predicted_coords, loss_dict, time_loss_dict = self.refine_step_single_crop(
@@ -559,6 +551,28 @@ class Engine:
                 result[k] = v
         return result
 
+    def _cache_static_crop_features(self, s, z, diffusion_conditioning, s_inputs):
+        """Store exact static crop features in host memory between recycles."""
+        return {
+            "s": s.detach().cpu(),
+            "z": z.detach().cpu(),
+            "diffusion_conditioning": self._move_diffusion_conditioning_to_cpu(
+                diffusion_conditioning
+            ),
+            "s_inputs": s_inputs.detach().cpu(),
+        }
+
+    def _load_static_crop_features(self, cached_features):
+        """Load one crop's static features without changing dtype or values."""
+        return (
+            cached_features["s"].to(self.device),
+            cached_features["z"].to(self.device),
+            self._move_diffusion_conditioning_to_device(
+                cached_features["diffusion_conditioning"], self.device
+            ),
+            cached_features["s_inputs"].to(self.device),
+        )
+
     def refine_step_single_crop(self, crop_batch, target_density=None, iteration=0, data_dir=None, out_dir=None, crop_idx=0, crop_atom_mask=None):
         """Perform refinement on a single crop."""
         start_time = time.time()
@@ -596,17 +610,17 @@ class Engine:
                 if not hasattr(self, 'crop_atom_types_cache'):
                     self.crop_atom_types_cache = {}
                 self.crop_atom_types_cache[cache_key] = {
-                    'atom_types': atom_types,
+                    'atom_types': atom_types.detach().cpu(),
                     'atom_symbols': atom_symbols,
-                    'atom_radius_weights': atom_radius_weights
+                    'atom_radius_weights': atom_radius_weights.detach().cpu()
                 }
 
         else:
             # Use cached atom types for subsequent recycles
             if hasattr(self, 'crop_atom_types_cache') and cache_key in self.crop_atom_types_cache:
-                atom_types = self.crop_atom_types_cache[cache_key]['atom_types']
+                atom_types = self.crop_atom_types_cache[cache_key]['atom_types'].to(self.device)
                 atom_symbols = self.crop_atom_types_cache[cache_key]['atom_symbols']
-                atom_radius_weights = self.crop_atom_types_cache[cache_key]['atom_radius_weights']
+                atom_radius_weights = self.crop_atom_types_cache[cache_key]['atom_radius_weights'].to(self.device)
             else:
                 # Fallback: compute atom types if cache miss
                 atom_types = self.get_atom_types(crop_batch)
@@ -621,12 +635,9 @@ class Engine:
         
         if cache_key in self.crop_feature_cache and iteration > 0:
             cached_features = self.crop_feature_cache[cache_key]
-            s = cached_features['s'].to(self.device)
-            z = cached_features['z'].to(self.device)
-            diffusion_conditioning = self._move_diffusion_conditioning_to_device(
-                cached_features['diffusion_conditioning'], self.device
+            s, z, diffusion_conditioning, s_inputs = self._load_static_crop_features(
+                cached_features
             )
-            s_inputs = cached_features['s_inputs'].to(self.device)
         else:
             # Get actual model (handles DDP wrapping)
             model = self._get_model()
@@ -680,16 +691,9 @@ class Engine:
                     "atom_dec_bias": atom_dec_bias,
                     "token_trans_bias": token_trans_bias,
                 }
-                cache_data = {
-                    's': s.detach(),
-                    'z': z.detach(),
-                    'diffusion_conditioning': {
-                        k: v.detach() if isinstance(v, torch.Tensor) else v
-                        for k, v in diffusion_conditioning.items()
-                    },
-                    's_inputs': s_inputs.detach(),
-                }
-                self.crop_feature_cache[cache_key] = cache_data
+                self.crop_feature_cache[cache_key] = self._cache_static_crop_features(
+                    s, z, diffusion_conditioning, s_inputs
+                )
         
         # Get actual model (handles DDP wrapping)
         model = self._get_model()
