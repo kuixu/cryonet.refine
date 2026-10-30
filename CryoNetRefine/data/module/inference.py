@@ -57,18 +57,23 @@ def load_input(
 
     """
 
-    structure = StructureV2.load(template_dir / f"{record.id}.npz")
+    structure_path = template_dir / f"{record.id}.npz"
+    structure = StructureV2.load(structure_path)
 
 
     # Load templates
     templates = None
     if record.templates and template_dir is not None:
         templates = {}
+        template_cache = {structure_path: structure}
         for template_info in record.templates:
             template_id = template_info.name
             # template_path = template_dir / f"{record.id}_{template_id}.npz"
             template_path = template_dir / f"{record.id}.npz"
-            template = StructureV2.load(template_path)
+            template = template_cache.get(template_path)
+            if template is None:
+                template = StructureV2.load(template_path)
+                template_cache[template_path] = template
             templates[template_id] = template
 
     # Load extra molecules

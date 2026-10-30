@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,7 +30,6 @@ def make_engine():
     engine.crop_first_featurizer = FakeFeaturizer()
     engine.max_tokens = 512
     engine.crop_batch_cache = {}
-    engine.crop_batch_device_cache = {}
     engine.crop_feature_cache = {"stale": object()}
     engine.global_template_coords_cache = object()
     engine.crop_atom_types_cache = {"stale": object()}
@@ -63,7 +63,54 @@ def test_new_crop_context_clears_record_local_caches():
     )
 
     assert engine.crop_batch_cache == {}
-    assert engine.crop_batch_device_cache == {}
     assert engine.crop_feature_cache == {}
     assert engine.global_template_coords_cache is None
     assert engine.crop_atom_types_cache == {}
+
+
+def _indexed_values(values, *, indexing_matrix, W=None, H=None):
+    return values[indexing_matrix]
+
+
+def test_static_crop_feature_cpu_round_trip_is_exact():
+    engine = make_engine()
+    engine.device = torch.device("cpu")
+    s = torch.tensor([[1.25, -2.5]], dtype=torch.float32)
+    z = torch.tensor([[[3.0, 4.5]]], dtype=torch.float16)
+    s_inputs = torch.tensor([[7, 11]], dtype=torch.int64)
+    indexing_matrix = torch.tensor([1, 0], dtype=torch.int64)
+    conditioning = {
+        "q": torch.tensor([[0.125, 0.25]], dtype=torch.float32),
+        "to_keys": partial(
+            _indexed_values,
+            indexing_matrix=indexing_matrix,
+            W=2,
+            H=1,
+        ),
+    }
+
+    cached = engine._cache_static_crop_features(s, z, conditioning, s_inputs)
+
+    assert cached["s"].device.type == "cpu"
+    assert cached["z"].device.type == "cpu"
+    assert cached["s_inputs"].device.type == "cpu"
+    assert cached["diffusion_conditioning"]["q"].device.type == "cpu"
+    assert (
+        cached["diffusion_conditioning"]["to_keys"].keywords["indexing_matrix"].device.type
+        == "cpu"
+    )
+
+    loaded_s, loaded_z, loaded_conditioning, loaded_s_inputs = (
+        engine._load_static_crop_features(cached)
+    )
+
+    assert torch.equal(loaded_s, s)
+    assert loaded_s.dtype == s.dtype
+    assert torch.equal(loaded_z, z)
+    assert loaded_z.dtype == z.dtype
+    assert torch.equal(loaded_s_inputs, s_inputs)
+    assert loaded_s_inputs.dtype == s_inputs.dtype
+    assert torch.equal(loaded_conditioning["q"], conditioning["q"])
+    assert torch.equal(
+        loaded_conditioning["to_keys"].keywords["indexing_matrix"], indexing_matrix
+    )
