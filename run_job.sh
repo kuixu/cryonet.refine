@@ -4,7 +4,7 @@ set -eo pipefail
 
 j=${1:?Usage: $0 <jobid>}
 
-jobs_root=${CRYONET_JOBS_ROOT:-/data1/jobs}
+jobs_root=${CRYONET_JOBS_ROOT:-/mnt/cryonet/data3/xk/data/jobs}
 d=$jobs_root/$j
 name=$(cat $d/name.list)
 out_dir=$d/${name}

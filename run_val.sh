@@ -12,7 +12,8 @@ if [ -z "$j" ] || [ -z "$phenix_env" ] || [ -z "$chimerax_cmd" ]; then
     exit 1
 fi
 
-d=/data1/jobs/$j
+jobs_root=${CRYONET_JOBS_ROOT:-/mnt/cryonet/data3/xk/data/jobs}
+d=$jobs_root/$j
 name=$(cat $d/name.list)
 out_dir=$d/${name}
 map=${out_dir}.mrc
