@@ -5,7 +5,7 @@
 
 j=$1
 phenix_env="/opt/phenix-1.21.1-5286/phenix_env.sh"
-chimerax_cmd="/usr/bin/chimerax"
+chimerax_cmd=${CHIMERAX_CMD:-${CHIMERAX_BIN:-/mnt/cryonet/data3/xk/usr/chimerax-1.11.1/bin/ChimeraX}}
 
 if [ -z "$j" ] || [ -z "$phenix_env" ] || [ -z "$chimerax_cmd" ]; then
     echo "Usage: $0 <job_id> <phenix_env> <chimerax_cmd>"

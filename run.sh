@@ -7,7 +7,7 @@ out_dir=$4
 restraints_file=$5
 
 phenix_env="/opt/phenix-1.21.1-5286/phenix_env.sh"
-chimerax_cmd="/usr/bin/chimerax"
+chimerax_cmd=${CHIMERAX_CMD:-${CHIMERAX_BIN:-/mnt/cryonet/data3/xk/usr/chimerax-1.11.1/bin/ChimeraX}}
 
 if [ -z "$input_pdb_path" ] || [ -z "$target_density" ] || [ -z "$resolution" ] || [ -z "$out_dir" ]; then
     echo "Usage: $0 <input_pdb_path> <target_density> <resolution> <out_dir> [restraints_file]"
