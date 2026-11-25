@@ -827,6 +827,7 @@ class Engine:
             "atom_to_token",
             "atom_token_index",
             "residue_index",
+            "asym_id",
             "template_atom_present_mask",
         ]:
             if key in batch:
@@ -839,6 +840,7 @@ class Engine:
             "ref_element",
             "residue_index",
             "template_atom_present_mask",
+            "asym_id",
         }
         has_mapping = ("atom_to_token" in self.global_feats) or ("atom_token_index" in self.global_feats)
         has_global_clash_inputs = base_required_keys.issubset(self.global_feats.keys()) and has_mapping

@@ -38,6 +38,17 @@ def _is_memory_error(exc: BaseException) -> bool:
     )
 
 
+def _split_sample_ids(sample_ids: torch.Tensor, max_parallel_samples: int | None):
+    """Split sample indices into batches capped by max_parallel_samples."""
+    if sample_ids.numel() == 0:
+        raise ValueError("multiplicity must be a positive integer")
+    if max_parallel_samples is None:
+        max_parallel_samples = sample_ids.numel()
+    if max_parallel_samples <= 0:
+        raise ValueError("max_parallel_samples must be a positive integer")
+    return sample_ids.split(max_parallel_samples)
+
+
 def deep_copy_tensors(obj):
     import copy
 
@@ -378,8 +389,8 @@ class AtomDiffusion(Module):
            
                 atom_coords_denoised = torch.zeros_like(atom_coords_noisy)
                 sample_ids = torch.arange(multiplicity).to(atom_coords_noisy.device)
-                sample_ids_chunks = sample_ids.chunk(
-                    multiplicity // max_parallel_samples + 1
+                sample_ids_chunks = _split_sample_ids(
+                    sample_ids, max_parallel_samples
                 )
                 model_input = atom_coords_noisy # add by huangfuyao
                 for sample_ids_chunk in sample_ids_chunks:

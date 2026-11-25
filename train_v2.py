@@ -79,27 +79,27 @@ def cleanup_ddp():
     if dist.is_initialized():
         dist.destroy_process_group()
 
-# 设置每个 rank 的独立日志文件
+# Configure separate log files for each rank.
 def setup_rank_logging(rank, out_dir):
-    """为每个 rank 设置独立的日志文件"""
+    """Configure a separate log file for each rank."""
     log_dir = Path(out_dir) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     log_file = log_dir / f"rank_{rank}.log"
     
-    # 创建 logger
+    # Create the rank-specific logger.
     logger = logging.getLogger(f"rank_{rank}")
     logger.setLevel(logging.DEBUG)
     
-    # 文件 handler
+    # File handler.
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.DEBUG)
     
-    # 控制台 handler（只输出到文件，避免混乱）
+    # Console handler for INFO messages and above.
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     
-    # 格式
+    # Include the rank in each log entry.
     formatter = logging.Formatter(
         f'[Rank {rank}] %(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -112,9 +112,9 @@ def setup_rank_logging(rank, out_dir):
     
     return logger
 
-# 设置全局异常钩子
+# Install a global exception hook.
 def setup_exception_hook(rank, logger):
-    """捕获未处理的异常"""
+    """Report uncaught exceptions."""
     def exception_hook(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
@@ -123,7 +123,7 @@ def setup_exception_hook(rank, logger):
         error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
         logger.critical(f"Uncaught exception in rank {rank}:\n{error_msg}")
         
-        # 也输出到 stderr（torchrun 可能会捕获）
+        # Also write to stderr so torchrun can capture the error.
         print(f"[Rank {rank}] CRITICAL ERROR:", file=sys.stderr)
         print(error_msg, file=sys.stderr)
         
@@ -198,10 +198,10 @@ def train(
     # Initialize DDP
     rank, world_size, local_rank = setup_ddp()
     is_main_process = rank == 0
-    # 🚀 初始化 wandb（只在主进程）
+    # Initialize wandb in the main process only.
     if is_main_process:
         wandb.init(
-            project="cryonet-refine",  # 修改为你的项目名
+            project="cryonet-refine",  # Set the tracking project name.
             name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             config={
                 'num_epochs': num_epochs,
@@ -223,7 +223,7 @@ def train(
                 'out_dir': out_dir,
             }
         )
-    # 🚀 设置每个 rank 的日志
+    # Set up logging for each rank.
     logger = setup_rank_logging(rank, out_dir)
     setup_exception_hook(rank, logger)
     
@@ -234,15 +234,15 @@ def train(
     data_path = Path(data).expanduser()
     data_stem = data_path.stem
     if file_list is not None:
-        # 读取文件列表（每行一个文件名，不包含后缀）
+        # Read one filename stem per line.
         file_list_path = Path(file_list).expanduser()
         with open(file_list_path, 'r') as f:
             file_names = [line.strip() for line in f if line.strip()]
         
-        # 筛选匹配的 PDB 文件
+        # Select matching PDB files.
         data: List[Path] = []
         for file_name in file_names:
-            # 尝试匹配 .pdb 文件
+            # Match the .pdb filename.
             pdb_file = data_path / f"{file_name}.pdb"
             if pdb_file.exists():
                 data.append(pdb_file)
@@ -253,7 +253,7 @@ def train(
         if is_main_process:
             click.echo(f"📋 Loaded {len(data)} PDB files from list (out of {len(file_names)} requested)")
     else:
-        # 原始逻辑：加载所有 PDB 文件
+        # Without a filter, load all PDB files.
         data: List[Path] = list(data_path.glob("*.pdb"))
         if is_main_process:
             click.echo(f"📁 Loaded {len(data)} PDB files from directory")
@@ -276,8 +276,8 @@ def train(
     if world_size > 1:
         try:
             logger.debug(f"Rank {rank}: Waiting at barrier...")
-            # dist.barrier(timeout=timedelta(seconds=600))  # 10分钟超时
-            dist.barrier()  # 不设置超时
+            # dist.barrier(timeout=timedelta(seconds=600))  # 10-minute timeout.
+            dist.barrier()  # Use the process group's default timeout.
             logger.debug(f"Rank {rank}: Barrier passed")
         except Exception as e:
             error_msg = f"Rank {rank}: Barrier timeout or error: {e}"
@@ -365,27 +365,27 @@ def train(
     data_module.setup("predict")
     dataloader = data_module.predict_dataloader()
 
-    # 🚀 添加数据分布检查
+    # Check the distribution of data across ranks.
     if is_main_process:
         click.echo(f"📊 Data distribution check:")
         click.echo(f"  Total samples in manifest: {len(manifest.records)}")
         click.echo(f"  Dataloader length: {len(dataloader)}")
 
-    # 检查每个 rank 的数据量
+    # Check the sample count on each rank.
     if world_size > 1:
         rank_data_count = len(dataloader)
-        # 收集所有 rank 的数据量
+        # Collect sample counts from all ranks.
         data_counts = [torch.tensor([0], device=device) for _ in range(world_size)]
         data_counts[rank] = torch.tensor([rank_data_count], device=device)
         
-        # 使用 all_gather 收集所有 rank 的数据量
+        # Gather sample counts with all_gather.
         gathered_counts = [torch.zeros_like(data_counts[0]) for _ in range(world_size)]
         dist.all_gather(gathered_counts, data_counts[rank])
         
         if is_main_process:
             click.echo(f"  Data per rank: {[c.item() for c in gathered_counts]}")
             
-            # 检查是否有 rank 没有数据
+            # Check for ranks without data.
             if any(c.item() == 0 for c in gathered_counts):
                 click.echo(f"  ⚠️  WARNING: Some ranks have no data!")
                 click.echo(f"  This may cause synchronization issues.")
@@ -422,20 +422,20 @@ def train(
             click.echo(f"\n{'='*80}")
             click.echo(f"🔄 Resuming training from checkpoint: {resume_checkpoint_path}")
             click.echo(f"{'='*80}\n")
-            # 加载checkpoint
+            # Load the checkpoint.
             resume_checkpoint = torch.load(resume_checkpoint_path, map_location="cpu", weights_only=False)
             
-            # 加载模型状态
+            # Load model state.
             original_model = model_module.module if hasattr(model_module, 'module') else model_module
             
-            # 处理state_dict（可能需要处理DDP前缀）
+            # Handle state_dict entries, including DDP prefixes.
             state_dict = resume_checkpoint['state_dict']
             model_state_dict = original_model.state_dict()
             
-            # 匹配并加载参数（处理可能的键名差异）
+            # Match parameters while accounting for key-name differences.
             matched_state_dict = {}
             for key, value in state_dict.items():
-                # 处理可能的键名差异
+                # Handle alternate key names.
                 if key in model_state_dict:
                     matched_state_dict[key] = value
                 elif key.replace('module.', '') in model_state_dict:
@@ -443,18 +443,18 @@ def train(
                 elif 'module.' + key in model_state_dict:
                     matched_state_dict['module.' + key] = value
             
-            # 加载模型权重
+            # Load the model weights.
             model_state_dict.update(matched_state_dict)
             original_model.load_state_dict(model_state_dict, strict=False)
             
-            if hasattr(model_module, 'module'):  # DDP包装的模型
+            if hasattr(model_module, 'module'):  # DDP-wrapped model.
                 model_module.module.load_state_dict(model_state_dict, strict=False)
             else:
                 model_module.load_state_dict(model_state_dict, strict=False)
             
             click.echo(f"✅ Model weights loaded from checkpoint")
             
-            # 恢复训练历史
+            # Restore training history.
             history_path = out_dir / "training_history.json"
             if history_path.exists():
                 import json
@@ -465,11 +465,11 @@ def train(
                 best_epoch = training_summary.get('best_epoch', -1)
                 best_epoch_loss = training_summary.get('best_epoch_loss', float('inf'))
                 
-                # 确定起始epoch（从最后一个完成的epoch+1开始）
+                # Determine the starting epoch from completed training history.
                 if len(epoch_history) > 0:
                     last_completed_epoch = epoch_history[-1]['epoch']
-                    start_epoch = last_completed_epoch  # 从下一个epoch开始
-                    # 恢复早停计数器（基于最后一次改进）
+                    start_epoch = last_completed_epoch  # The loop resumes with the next epoch.
+                    # Restore the early-stopping counter from the last improvement.
                     if best_epoch > 0:
                         epoch_patience_counter = last_completed_epoch - best_epoch
                         if epoch_patience_counter < 0:
@@ -482,25 +482,25 @@ def train(
                     start_epoch = 0
                     click.echo(f"📊 No previous training history found, starting from epoch 1")
             else:
-                # 尝试从文件名提取epoch（对于 epoch checkpoint）
+                # Try to extract the epoch number from the checkpoint filename.
                 if 'epoch' in resume_checkpoint_path.stem:
                     try:
                         epoch_num = int(resume_checkpoint_path.stem.split("_")[-1])
-                        start_epoch = epoch_num  # 从该 epoch 继续
+                        start_epoch = epoch_num  # Resume from this epoch.
                         click.echo(f"📊 Extracted epoch from filename: {start_epoch}")
                         click.echo(f"🔄 Resuming from epoch {start_epoch + 1}")
                     except ValueError:
                         pass
                 
-                # 如果是 best checkpoint 且无法从文件名提取
+                # Handle a best checkpoint without an epoch number in its filename.
                 if start_epoch == 0 and 'best_epoch' in resume_checkpoint:
                     best_epoch = resume_checkpoint['best_epoch']
                     best_epoch_loss = resume_checkpoint.get('best_epoch_loss', float('inf'))
-                    start_epoch = best_epoch  # 从最佳epoch后开始
+                    start_epoch = best_epoch  # Resume after the best epoch.
                     click.echo(f"📊 Found epoch info in checkpoint: best_epoch={best_epoch}")
                     click.echo(f"🔄 Resuming from epoch {start_epoch + 1}")    
 
-    # 多 epoch 训练循环
+    # Multi-epoch training loop.
     for epoch in range(start_epoch, num_epochs):
         if is_main_process:
             click.echo(f"\n{'='*80}")
@@ -511,7 +511,7 @@ def train(
         if hasattr(dataloader.sampler, 'set_epoch'):
             dataloader.sampler.set_epoch(epoch)
         
-        # 用于统计当前 epoch 的所有 case 的 loss
+        # Accumulate case losses for the current epoch.
         epoch_losses = {
             'total_loss': [],
             'CC': [],
@@ -530,7 +530,7 @@ def train(
             try:
                 # logger.info(f"Rank {rank}: Processing batch {batch_idx}")
                 
-                # 检查 batch 是否为空
+                # Check for an empty batch.
                 if batch is None or len(batch) == 0:
                     logger.warning(f"Rank {rank}: Empty batch at index {batch_idx}")
                     continue
@@ -546,7 +546,7 @@ def train(
 
                 if is_main_process:
                     click.echo(f"\nProcessing batch {batch_idx}")
-                # 检查文件是否存在
+                # Check that the input file exists.
                 if den != 0.0:
                     if not os.path.exists(target_density):
                         error_msg = f"Rank {rank}: Target density file not found: {target_density}"
@@ -607,13 +607,13 @@ def train(
                     )
                     logger.info(f"Rank {rank}: Refinement completed for {record_id}")
                 except RuntimeError as e:
-                    # CUDA OOM 错误
+                    # Handle CUDA out-of-memory errors.
                     if "out of memory" in str(e).lower():
                         error_msg = f"Rank {rank}: CUDA OOM error for {record_id} at batch {batch_idx}"
                         logger.error(error_msg)
                         logger.error(f"Error details: {e}")
                         logger.error(traceback.format_exc())
-                        # 清理显存
+                        # Release GPU memory.
                         torch.cuda.empty_cache()
                         raise RuntimeError(f"OOM in rank {rank}: {error_msg}") from e
                     else:
@@ -639,7 +639,7 @@ def train(
                 epoch_losses['total_loss'].append(best_loss)
                 epoch_losses['CC'].append(best_cc)
 
-                # 🚀 统计所有其他损失值
+                # Accumulate the other loss components.
                 for key in ['rama', 'rotamer', 'bond', 'angle', 'cbeta', 'ramaz', 'clash']:
                     if key in best_loss_dict:
                         value = best_loss_dict[key]
@@ -672,7 +672,7 @@ def train(
                     end_time = time.time()
                     click.echo(f"Refinement completed in {end_time - start_time:.2f} seconds")
             except Exception as e:
-                # 捕获所有异常并详细记录
+                # Log exceptions with full details.
                 error_type = type(e).__name__
                 error_msg = str(e)
                 full_traceback = traceback.format_exc()
@@ -682,7 +682,7 @@ def train(
                 logger.critical(f"  Error message: {error_msg}")
                 logger.critical(f"  Full traceback:\n{full_traceback}")
                 
-                # 如果是 CUDA 错误，记录显存信息
+                # Log GPU memory information for CUDA errors.
                 if torch.cuda.is_available():
                     try:
                         mem_allocated = torch.cuda.memory_allocated(device) / 1024**3
@@ -691,7 +691,7 @@ def train(
                     except:
                         pass
                 
-                # 输出到 stderr（torchrun 可能会捕获）
+                # Also write to stderr so torchrun can capture the error.
                 print(f"\n{'='*80}", file=sys.stderr)
                 print(f"[Rank {rank}] CRITICAL ERROR in batch {batch_idx}", file=sys.stderr)
                 print(f"Error type: {error_type}", file=sys.stderr)
@@ -700,40 +700,40 @@ def train(
                 print(full_traceback, file=sys.stderr)
                 print(f"{'='*80}\n", file=sys.stderr)
                 
-                # 在分布式训练中，一个 rank 的错误会导致所有 rank 失败
-                # 可以选择继续（跳过这个 batch）或终止训练
+                # A failure on one rank can affect the entire distributed run.
+                # The following handler terminates training instead of silently skipping the batch.
                 if world_size > 1:
-                    # 通知其他 rank 发生了错误
+                    # Notify the other ranks of the error.
                     try:
                         error_flag = torch.tensor([1], device=device)
                         dist.all_reduce(error_flag, op=dist.ReduceOp.MAX)
                     except:
                         pass
                 
-                # 重新抛出异常以终止训练
+                # Re-raise the exception to terminate training.
                 raise        
         
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
         
-        # ✅ 每个 rank 只统计自己处理的样本（不跨 rank 聚合）
-        # 注意：由于使用负载均衡 sampler，不同 rank 的样本数量可能不同
-        # 我们只在 rank 0 进行统计和保存，避免 tensor 大小不匹配导致的通信问题
+        # Each rank accumulates only its own samples, without cross-rank aggregation.
+        # Load balancing can produce different sample counts across ranks.
+        # Rank 0 reports and saves local statistics to avoid mismatched tensor sizes.
         if is_main_process:
             click.echo(f"\n{'='*80}")
             click.echo(f"Epoch {epoch + 1}/{num_epochs} Completed in {epoch_duration:.2f}s")
             click.echo(f"{'='*80}")
 
-        # 计算并打印平均 loss (only main process)
-        # 统计只基于 rank 0 处理的样本
+        # Compute and report average losses in the main process only.
+        # These statistics cover only samples processed by rank 0.
         if is_main_process:
-            # 即使没有样本，也记录 epoch 信息
+            # Record epoch information even when no samples were processed.
             if len(epoch_losses['total_loss']) > 0:
-                # 🚀 计算所有损失项的平均值
+                # Compute the average of each loss component.
                 avg_total_loss = sum(epoch_losses['total_loss']) / len(epoch_losses['total_loss'])
                 avg_cc = sum(epoch_losses['CC']) / len(epoch_losses['CC'])
                 
-                # 🚀 计算其他损失项的平均值
+                # Compute averages for the other loss components.
                 avg_rama = sum(epoch_losses['rama']) / len(epoch_losses['rama']) if epoch_losses['rama'] else 0.0
                 avg_rotamer = sum(epoch_losses['rotamer']) / len(epoch_losses['rotamer']) if epoch_losses['rotamer'] else 0.0
                 avg_bond = sum(epoch_losses['bond']) / len(epoch_losses['bond']) if epoch_losses['bond'] else 0.0
@@ -760,7 +760,7 @@ def train(
                 click.echo(f"  Average Ramaz: {avg_ramaz:.6f}")
                 click.echo(f"  Average Clash: {avg_clash:.6f}")
                 
-                # 🚀 使用 wandb 记录所有损失项
+                # Log all loss components to wandb.
                 if is_main_process:
                     wandb.log({
                         'epoch': epoch + 1,
@@ -777,7 +777,7 @@ def train(
                         'train/epoch_duration': epoch_duration,
                     })
                 
-                # 保存 epoch 统计信息
+                # Save epoch statistics.
                 epoch_stats = {
                     'epoch': epoch + 1,
                     'avg_total_loss': float(avg_total_loss),
@@ -793,11 +793,11 @@ def train(
                     'duration': float(epoch_duration)
                 }
             else:
-                # 即使没有样本，也记录 epoch 信息
+                # Record epoch information even when no samples were processed.
                 click.echo(f"📊 Epoch {epoch + 1} Statistics (Rank 0):")
                 click.echo(f"  ⚠️  No samples processed by rank 0 in this epoch")
                 
-                # 🚀 wandb 记录（无数据）
+                # Log the empty epoch to wandb.
                 if is_main_process:
                     wandb.log({
                         'epoch': epoch + 1,
@@ -805,7 +805,7 @@ def train(
                         'train/epoch_duration': epoch_duration,
                     })
                 
-                # 保存 epoch 统计信息（标记为无数据）
+                # Save epoch statistics marked as having no data.
                 epoch_stats = {
                     'epoch': epoch + 1,
                     'avg_total_loss': None,
@@ -822,7 +822,7 @@ def train(
                 }
             epoch_history.append(epoch_stats)
             
-            # 每个 epoch 结束后立即保存训练历史（避免丢失）
+            # Save training history at the end of every epoch.
             import json
             # Ensure best_epoch_loss is serializable
             best_epoch_loss_val = best_epoch_loss
@@ -832,7 +832,7 @@ def train(
                 'epoch_history': epoch_history,
                 'best_epoch': best_epoch if best_epoch > 0 else None,
                 'best_epoch_loss': float(best_epoch_loss_val) if best_epoch_loss_val != float('inf') else None,
-                'early_stopped': False,  # 将在最后更新
+                'early_stopped': False,  # Updated at the end of training.
                 'total_epochs_run': len(epoch_history),
                 'early_stop_patience': epoch_early_stop_patience
             }
@@ -841,11 +841,11 @@ def train(
                 json.dump(training_summary, f, indent=2)
             click.echo(f"  Training history updated: {history_path}")
                 
-            # 保存当前 epoch 模型 checkpoint
+            # Save the checkpoint for the current epoch.
             original_model = model_module.module if hasattr(model_module, 'module') else model_module
             checkpoint_epoch = torch.load(checkpoint, map_location="cpu", weights_only=False)
             
-            # 只更新训练过的参数
+            # Save only the trained parameters.
             current_state_dict = checkpoint_epoch['state_dict']
             trained_state_dict = original_model.state_dict()
             
@@ -863,8 +863,8 @@ def train(
         if world_size > 1:
             try:
                 logger.debug(f"Rank {rank}: Waiting at barrier...")
-                # dist.barrier(timeout=timedelta(seconds=600))  # 10分钟超时
-                dist.barrier()  # 不设置超时
+                # dist.barrier(timeout=timedelta(seconds=600))  # 10-minute timeout.
+                dist.barrier()  # Use the process group's default timeout.
                 logger.debug(f"Rank {rank}: Barrier passed")
             except Exception as e:
                 error_msg = f"Rank {rank}: Barrier timeout or error: {e}"
@@ -872,8 +872,8 @@ def train(
                 logger.critical(traceback.format_exc())
                 raise RuntimeError(error_msg) from e
         
-        # ============ 早停策略检查 ============
-        # 只在 rank 0 做早停判断，然后 broadcast 给所有 rank
+        # Check the early-stopping criterion.
+        # Rank 0 makes the decision and broadcasts it to all ranks.
         # Continue with early stopping check only if we have valid loss
         if is_main_process and len(epoch_losses['total_loss']) > 0:
             # Ensure values are Python scalars
@@ -881,26 +881,26 @@ def train(
                 avg_total_loss = avg_total_loss.item()
             if isinstance(best_epoch_loss, torch.Tensor):
                 best_epoch_loss = best_epoch_loss.item()
-            # 检查当前 epoch 是否有改进
+            # Check for an improvement in the current epoch.
             if avg_total_loss < best_epoch_loss:
-                # 有改进：更新最好的结果
+                # Update the best result after an improvement.
                 improvement = best_epoch_loss - avg_total_loss
                 best_epoch_loss = avg_total_loss
                 best_epoch = epoch + 1
                 epoch_patience_counter = 0
                 
-                # 保存最好的模型状态（深拷贝以避免引用问题）
+                # Copy the best model state to avoid retaining mutable references.
                 from copy import deepcopy
                 best_model_state = deepcopy(model_module.state_dict())
                 
                 click.echo(f"  ✅ New best epoch! Loss improved by {improvement:.6f}")
                 click.echo(f"  Best epoch so far: Epoch {best_epoch}, Loss: {best_epoch_loss:.6f}")
                 
-                # 保存最好的模型
+                # Save the best model.
                 original_model = model_module.module if hasattr(model_module, 'module') else model_module
                 checkpoint_best = torch.load(checkpoint, map_location="cpu", weights_only=False)
                 
-                # 只更新训练过的参数
+                # Save only the trained parameters.
                 current_state_dict_best = checkpoint_best['state_dict']
                 trained_state_dict_best = original_model.state_dict()
                 for key, value in trained_state_dict_best.items():
@@ -915,13 +915,13 @@ def train(
                 torch.save(checkpoint_best, checkpoint_path_best)
                 click.echo(f"  💾 Best model saved to {checkpoint_path_best}")
             else:
-                # 没有改进：增加 patience 计数器
+                # Increment the patience counter when there is no improvement.
                 epoch_patience_counter += 1
                 click.echo(f"  ⚠️  No improvement in this epoch")
                 click.echo(f"  Patience counter: {epoch_patience_counter}/{epoch_early_stop_patience}")
                 click.echo(f"  Best epoch so far: Epoch {best_epoch}, Loss: {best_epoch_loss:.6f}")
             
-            # 在早停检查后更新训练历史（确保best_epoch和best_epoch_loss是最新的）
+            # Update history after early-stopping checks so best-epoch fields stay current.
             import json
             best_epoch_loss_val = best_epoch_loss
             if isinstance(best_epoch_loss_val, torch.Tensor):
@@ -938,19 +938,19 @@ def train(
             with open(history_path, 'w') as f:
                 json.dump(training_summary, f, indent=2)
         
-        # ✅ Broadcast 早停决策，确保所有 rank 同步停止
+        # Broadcast the early-stopping decision so all ranks stop together.
         if world_size > 1:
-            # Rank 0 决定是否早停
+            # Rank 0 decides whether to stop early.
             if is_main_process and len(epoch_losses['total_loss']) > 0:
                 should_stop = 1 if epoch_patience_counter >= epoch_early_stop_patience else 0
             else:
                 should_stop = 0
             
-            # Broadcast 决策到所有 rank
+            # Broadcast the decision to all ranks.
             should_stop_tensor = torch.tensor([should_stop], dtype=torch.long, device=device)
             dist.broadcast(should_stop_tensor, src=0)
             
-            # 所有 rank 检查是否需要停止
+            # All ranks check whether training should stop.
             if should_stop_tensor.item() == 1:
                 if is_main_process:
                     click.echo(f"\n{'='*80}")
@@ -959,15 +959,15 @@ def train(
                     click.echo(f"   Best epoch: Epoch {best_epoch}, Loss: {best_epoch_loss:.6f}")
                     click.echo(f"{'='*80}\n")
                     
-                    # 恢复最好的模型权重
+                    # Restore the best model weights.
                     if best_model_state is not None:
                         model_module.load_state_dict(best_model_state)
                         click.echo(f"✅ Restored best model weights from Epoch {best_epoch}")
                 
-                # 跳出 epoch 循环（所有 rank 同时跳出）
+                # Exit the epoch loop on all ranks.
                 break
         else:
-            # 单 GPU 模式的早停
+            # Early stopping in single-GPU mode.
             if is_main_process and len(epoch_losses['total_loss']) > 0:
                 if epoch_patience_counter >= epoch_early_stop_patience:
                     click.echo(f"\n{'='*80}")
@@ -987,7 +987,7 @@ def train(
 
     if is_main_process:
         wandb.finish()
-    # ============ 所有 Epoch 结束统计 ============
+    # Summarize the completed training run.
     if is_main_process:
         click.echo(f"\n{'='*80}")
         if epoch_patience_counter >= epoch_early_stop_patience:
@@ -1003,12 +1003,12 @@ def train(
                 click.echo(f"  Epoch {stats['epoch']}: Avg Loss={stats['avg_total_loss']:.6f}, "
                         f"Avg CC={stats['avg_cc']:.6f}, Duration={stats['duration']:.2f}s{marker}")
             
-            # 显示最好的 epoch 信息
+            # Report the best epoch.
             click.echo(f"\n🏆 Best Results:")
             click.echo(f"  Best Epoch: {best_epoch}")
             click.echo(f"  Best Avg Loss: {best_epoch_loss:.6f}")
             
-            # 保存训练历史（包含早停信息）
+            # Save training history, including early-stopping information.
             import json
             # Ensure best_epoch_loss is serializable
             best_epoch_loss_val = best_epoch_loss
