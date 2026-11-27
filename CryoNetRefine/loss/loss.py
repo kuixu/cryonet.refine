@@ -75,6 +75,20 @@ def compute_overall_cc_loss(predicted_coords, target_density, feats, atom_weight
         return torch.tensor(0.0, device=device), torch.tensor(1.0, device=device)
 
 
+def _clash_pair_weight(x, softness, activation):
+    """Map the Probe gap, in Å past the cutoff, to a per-pair clash weight.
+
+    Both activations use the same preactivation ``-softness * x``. Sigmoid
+    saturates at 1; softplus does not.
+    """
+    raw = -softness * x
+    if activation == "softplus":
+        return F.softplus(raw)
+    if activation != "sigmoid":
+        raise ValueError(f"Unknown clash activation: {activation}")
+    return torch.sigmoid(raw)
+
+
 def probe_style_clash_loss(
     predicted_coords: torch.Tensor,
     feats: dict,
@@ -83,6 +97,7 @@ def probe_style_clash_loss(
     exclude_neighbor_distance: int = 1,  
     eps: float = 1e-6,
     chunk_size: int = 5000,  # Chunk size for batch processing, can be adjusted based on GPU memory
+    activation: str = "sigmoid",
 ):
     device = predicted_coords.device
     B, N, _ = predicted_coords.shape
@@ -169,7 +184,7 @@ def probe_style_clash_loss(
                 dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, ci, cj]
                 gap = dists - (atom_vdw_i.unsqueeze(2) + atom_vdw_j.unsqueeze(1))  # [1, ci, cj]
                 x = gap - clash_cutoff
-                prob = torch.sigmoid(-softness * x)  # [1, ci, cj]
+                prob = _clash_pair_weight(x, softness, activation)  # [1, ci, cj]
                 if diag_flag:
                     # Keep strict upper triangle only (avoid self-pairs + double counting)
                     ci = coords_i.shape[1]
@@ -196,7 +211,7 @@ def probe_style_clash_loss(
                 dists = torch.sqrt(torch.sum(diffs * diffs, dim=-1) + eps)  # [1, ci, cj]
                 gap = dists - (atom_vdw_i.unsqueeze(2) + atom_vdw_j.unsqueeze(1))  # [1, ci, cj]
                 x = gap - clash_cutoff
-                prob = torch.sigmoid(-softness * x)  # [1, ci, cj]
+                prob = _clash_pair_weight(x, softness, activation)  # [1, ci, cj]
 
                 # Only same-chain sequence neighbors are excluded.
                 res_diff = atom_res_i.unsqueeze(2) - atom_res_j.unsqueeze(1)  # [1, ci, cj]
@@ -291,7 +306,7 @@ def probe_style_clash_loss(
         # Compute clash probabilities
         with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
             x = gap - clash_cutoff
-            clash_prob = torch.sigmoid(-softness * x) * pair_mask.float()  # [1, N, N]
+            clash_prob = _clash_pair_weight(x, softness, activation) * pair_mask.float()  # [1, N, N]
 
         # Only sum the upper triangle (to avoid double-counting)
         triu_mask = torch.triu(torch.ones(N, N, dtype=torch.bool, device=device), diagonal=1)
@@ -305,7 +320,7 @@ def probe_style_clash_loss(
     return clashscore, soft_n_clashes_final
 
 
-def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_root=None, top8000_path=None, data_dir=None, geometric_adapter=None, geometric_wrapper=None, weights=None, is_nucleic_acid=False, final_global_refined_coords=None, global_feats=None, use_global_clash=False):
+def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_root=None, top8000_path=None, data_dir=None, geometric_adapter=None, geometric_wrapper=None, weights=None, is_nucleic_acid=False, final_global_refined_coords=None, global_feats=None, use_global_clash=False, clash_activation="softplus"):
     """
     Compute geometric losses via simplified wrapper.
     Returns (loss_dict)
@@ -386,6 +401,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
                 global_feats,
                 clash_cutoff=-0.4,
                 softness=10.0,
+                activation=clash_activation,
             )
         else:
             clashscore, _ = probe_style_clash_loss(
@@ -393,6 +409,7 @@ def compute_geometric_losses(crop_idx, predicted_coords, feats, device, geom_roo
                 feats,
                 clash_cutoff=-0.4,
                 softness=10.0,
+                activation=clash_activation,
             )
         loss_dict["clash"] = clashscore.mean()
         time_loss_dict["clash"] = time.time() - clash_start_time
@@ -475,7 +492,8 @@ def refine_loss(
             is_nucleic_acid=is_nucleic_acid,
             final_global_refined_coords=final_global_refined_coords,
             global_feats=global_feats,
-            use_global_clash=use_global_clash
+            use_global_clash=use_global_clash,
+            clash_activation=getattr(args, "clash_activation", "softplus"),
         )
         # Expose each component with weights
         for name, value in geo_losses.items():

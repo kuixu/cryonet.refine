@@ -58,6 +58,7 @@ class RefineArgs:
         "user_plane_parallelity": 1.0,
     })
     use_global_clash: bool = False
+    clash_activation: str = "softplus"
     data_dir: str | None = None
     use_molecule_aware_cropping: bool = True 
     min_improvement: float = 0.0

@@ -73,3 +73,13 @@ def test_missing_chain_ids_are_not_silently_assumed(mapping, chunk_size):
     del feats["asym_id"]
     with pytest.raises(ValueError, match="asym_id is required"):
         probe_style_clash_loss(coords, feats, chunk_size=chunk_size)
+
+
+@pytest.mark.parametrize("chunk_size", [5000, 1])
+def test_softplus_clash_uses_the_same_preactivation(chunk_size):
+    coords, feats = _pair([1, 2], [831, 831], "index")
+    _, count = probe_style_clash_loss(coords, feats, chunk_size=chunk_size, activation="softplus")
+    torch.testing.assert_close(count.reshape(()), F.softplus(torch.tensor(1.02)))
+    count.sum().backward()
+    assert torch.isfinite(coords.grad).all()
+    assert coords.grad.abs().sum() > 0
