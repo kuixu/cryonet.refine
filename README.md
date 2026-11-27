@@ -184,7 +184,7 @@ Tested reference hardware:
 You can also run validation directly (without `run.sh`):
 
 ```bash
-python  ./CryoNetRefine/data/output/metrics_validation.py \
+python -m CryoNetRefine.data.output.metrics_validation \
   <pdb_file> <map_file> -r <resolution> \
   --phenix_env /opt/phenix-1.21.1-5286/phenix_env.sh \
   --chimerax_cmd /usr/bin/chimerax
