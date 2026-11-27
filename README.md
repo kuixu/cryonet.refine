@@ -154,19 +154,18 @@ A typical end-of-run log looks like:
 ```
 Refined structure 0 saved to output/0775_af3_CryoNet.Refine.cif
 Refinement completed!
-Refining structures: 100%|██████████| 1/1 [35:37<00:00, 2137.63s/it]
-Refinement completed in 2158.01 seconds
+Refining structures: 100%|██████████| 1/1 [19:18<00:00, 1158.00s/it]
+Refinement completed in 1158.00 seconds
 CryoNet.Refine refinement completed!
 ```
 
-For the provided demo (EMD-0775, 3.6 Å, AlphaFold 3 + matchmaker initial model, 1896 residues), the end-to-end refinement takes approximately **35–36 minutes (~2160 seconds)** on a single NVIDIA GPU (NVIDIA H20). Peak GPU memory usage is **~14 GB**.
+For the provided demo (EMD-0775, 3.6 Å, AlphaFold 3 + matchmaker initial model, 1896 residues), the end-to-end refinement takes approximately **19.3 minutes (1158 seconds)** on a single NVIDIA H20. Peak GPU memory usage is **~14 GB**.
 
 Tested reference hardware:
 
 | GPU | VRAM | Driver / CUDA | Observed VRAM usage | GPU util. | Wall-clock time |
 |---|---|---|---|---|---|
-| NVIDIA H20 | 96 GB | 570.172.08 / CUDA 12.8 | ~14 GB | ~32% | **2158.01 s (~35 min 37 s)** |
-| NVIDIA GeForce RTX 4090 D | 24 GB | 570.124.06 / CUDA 12.8 | ~14 GB | ~11% | **1952.34 s (~32 min 32 s)** |
+| NVIDIA H20 | 96 GB | 570.172.08 / CUDA 12.8 | ~14 GB | ~32% | **1158 s (~19.3 min)** |
 
 
 ### Validation Configuration in `run.sh`
