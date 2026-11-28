@@ -23,7 +23,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 pdbfile = status.get("pdbfile_local") or status.get("pdbfile") or ""
 print(os.path.basename(str(pdbfile)))
 print(status.get("resolution", 0.0))
-print(status.get("num_recycles", 100))
+print(status.get("num_recycles", 300))
 PY
 )
 cif_filename=${status_values[0]}
